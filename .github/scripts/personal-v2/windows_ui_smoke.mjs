@@ -84,6 +84,7 @@ const probe = `(() => {
     visible, splash: !!document.querySelector('[data-component="startup-splash"],[data-component="first-launch-splash"]'),
     overlayBlocking: !!overlayStyle && overlayStyle.pointerEvents !== "none" && Number(overlayStyle.opacity) > 0.05,
     bodyText: document.body.innerText.slice(0, 200),
+    errorDetails: document.querySelector("textarea[data-slot=input-input]")?.value?.slice(0, 8000) ?? "",
   };
 })()`
 const report = { started: new Date().toISOString(), installedExecutable: resolve(binary), ready: false, observations: [], errors: [] }
@@ -118,6 +119,7 @@ try {
       report.last = last
       if (report.observations.length === 0 || Date.now() - report.observations.at(-1).at > 5000)
         report.observations.push({ at: Date.now(), ...last })
+      if (last.bodyText?.includes("An error occurred while starting the local server.") && last.errorDetails) break
       if ((last.shell || last.home || last.editor) && last.visible && !last.overlayBlocking) {
         await sleep(3000)
         const confirm = await cdp.send("Runtime.evaluate", { expression: probe, returnByValue: true })
