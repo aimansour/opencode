@@ -55,7 +55,7 @@ jobs:
             exit 1
           fi
           open_issues="$(gh issue list --repo aimansour/opencode --state open --limit 1000 --json title --jq '.[].title')"
-          if grep -Fq '[a11y-release-blocked]' <<< "$open_issues"; then
+          if grep -Eq '\[a11y-release-(blocked|stop)\]' <<< "$open_issues"; then
             echo "An open release-blocker issue needs manual resolution; no build or release."
             exit 0
           fi
@@ -69,8 +69,9 @@ jobs:
             [[ "$tag" == v2.0.18 ]] && eligible=1
             [[ "$eligible" == 1 ]] || continue
             [[ -z "$REQUESTED_TAG" || "$tag" == "$REQUESTED_TAG" ]] || continue
-            if existing="$(gh release view "a11y-$tag" --repo aimansour/opencode --json isDraft --jq .isDraft 2>/dev/null)"; then
-              if [[ "$existing" == true ]]; then
+            if existing="$(gh release view "a11y-$tag" --repo aimansour/opencode --json isDraft,assets 2>/dev/null)"; then
+              if [[ "$(jq -r '.isDraft' <<< "$existing")" == true || "$(jq '.assets | length' <<< "$existing")" -ne 14 ||
+                    "$(jq '[.assets[] | select(.state == "uploaded" and .size > 0 and (.digest | startswith("sha256:")))] | length' <<< "$existing")" -ne 14 ]]; then
                 title="[a11y-release-blocked] $tag incomplete draft"
                 body="A draft personal release exists for $tag. Inspect its assets and the previous Actions run before deleting, completing, or retrying it: https://github.com/aimansour/opencode/releases/tag/a11y-$tag . Close this issue only after manual resolution."
                 gh issue create --repo aimansour/opencode --title "$title" --body "$body"
@@ -164,6 +165,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/brand.py" "$PWD"
+          python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/desktop_brand.py" "$PWD"
           git diff --check
           git diff --cached --check
           git add -A
@@ -199,6 +201,7 @@ jobs:
           bun run --cwd packages/session-ui typecheck
           bun run --cwd packages/app typecheck
           bun run --cwd packages/cli typecheck
+          bun run --cwd packages/desktop typecheck
           bun run --cwd packages/session-ui test
 
       - name: Run the actual streaming accessibility regression in Chromium
@@ -271,7 +274,7 @@ jobs:
           live="$(gh api repos/anomalyco/opencode/pulls/51084)"
           [[ "$(jq -r '.merged' <<< "$live")" == false ]]
           [[ "$(jq -r '.head.sha' <<< "$live")" == "$PR_SHA" ]]
-          echo "The original PR is still open at the exact tested commit."
+          echo "The original PR remains unmerged at the exact tested commit."
 
       - name: Push the exact patched source as a separate immutable release tag
         working-directory: source
@@ -308,10 +311,39 @@ jobs:
           Source tag contains the exact official V2 source plus the PR patch and personal identity changes. BUILD_INFO.txt records the commits, and SHA256SUMS lists archive checksums. The Linux x64 baseline executable was run from the workflow's PATH and checked before publication. Other architectures are cross-compiled and statically verified, not runtime-tested on their target operating systems.
           EOF
           gh release create "$RELEASE_TAG" "$GITHUB_WORKSPACE"/release-assets/* \
+            --draft \
             --repo aimansour/opencode \
             --verify-tag \
             --title "OpenCode A11y $TAG" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
+          draft="$(gh api "repos/aimansour/opencode/releases/tags/$RELEASE_TAG")"
+          [[ "$(jq -r '.draft' <<< "$draft")" == true ]]
+          [[ "$(jq '.assets | length' <<< "$draft")" -eq 14 ]] || {
+            echo "Draft release has an unexpected asset count; manual repair required." >&2
+            exit 1
+          }
+          for file in "$GITHUB_WORKSPACE"/release-assets/*; do
+            name="${file##*/}"
+            bytes="$(stat -c %s "$file")"
+            digest="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            jq -e --arg name "$name" --arg digest "$digest" --argjson bytes "$bytes" \
+              'any(.assets[]; .name == $name and .size == $bytes and .state == "uploaded" and .digest == $digest)' \
+              <<< "$draft" >/dev/null || {
+                echo "Missing, partial or hash-mismatched release upload: $name" >&2
+                exit 1
+              }
+          done
+          live="$(gh api repos/anomalyco/opencode/pulls/51084)"
+          [[ "$(jq -r '.merged' <<< "$live")" == false && "$(jq -r '.head.sha' <<< "$live")" == "$PR_SHA" ]] || {
+            echo "PR changed while verifying the draft; leaving it unpublished." >&2
+            exit 1
+          }
+          gh release edit "$RELEASE_TAG" --repo aimansour/opencode --draft=false
+          published="$(gh api "repos/aimansour/opencode/releases/tags/$RELEASE_TAG")"
+          [[ "$(jq -r '.draft' <<< "$published")" == false && "$(jq '.assets | length' <<< "$published")" -eq 14 ]] || {
+            echo "Release publication could not be verified." >&2
+            exit 1
+          }
 
       - name: Block future runs if verification or publishing fails
         if: ${{ failure() && steps.patch.outcome != 'failure' && steps.brand.outcome != 'failure' }}

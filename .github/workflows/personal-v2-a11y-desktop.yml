@@ -1,0 +1,317 @@
+name: Personal V2 A11y Windows Desktop
+
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional official V2 tag; empty picks the oldest unshipped Desktop version."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: personal-v2-a11y-desktop
+  cancel-in-progress: false
+
+jobs:
+  select:
+    if: github.repository == 'aimansour/opencode' && vars.PERSONAL_A11Y_STOP != 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.pick.outputs.build }}
+      tag: ${{ steps.pick.outputs.tag }}
+      pr_sha: ${{ steps.pick.outputs.pr_sha }}
+      release_tag: ${{ steps.pick.outputs.release_tag }}
+    steps:
+      - id: pick
+        name: Select a tested personal CLI and unshipped official V2 tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag || '' }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$REQUESTED_TAG" && ! "$REQUESTED_TAG" =~ ^v2\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid official V2 tag: $REQUESTED_TAG" >&2
+            exit 1
+          fi
+          pr="$(gh api repos/anomalyco/opencode/pulls/51084)"
+          if [[ "$(jq -r '.merged' <<< "$pr")" == true ]]; then
+            echo "PR #51084 is merged: stop the personal desktop distribution."
+            exit 0
+          fi
+          if [[ "$(jq -r '.head.repo.full_name' <<< "$pr")" != aimansour/opencode ||
+                "$(jq -r '.head.ref' <<< "$pr")" != streaming-steps-a11y ||
+                "$(jq -r '.base.ref' <<< "$pr")" != v2 ]]; then
+            echo "Unexpected PR owner or refs. Manual review required." >&2
+            exit 1
+          fi
+          issues="$(gh issue list -R aimansour/opencode --state open --limit 1000 --json title --jq '.[].title')"
+          if grep -Eq '\[a11y-release-(blocked|stop)\]' <<< "$issues"; then
+            echo "Personal release stopped by an open issue."
+            exit 0
+          fi
+          pr_sha="$(jq -r '.head.sha' <<< "$pr")"
+          tags="$(git ls-remote --refs --tags https://github.com/anomalyco/opencode.git 'refs/tags/v2.*' |
+            awk '{sub("refs/tags/", "", $2); print $2}' |
+            grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V)"
+          eligible=0
+          while IFS= read -r tag; do
+            [[ "$tag" == v2.0.18 ]] && eligible=1
+            [[ "$eligible" == 1 ]] || continue
+            [[ -z "$REQUESTED_TAG" || "$tag" == "$REQUESTED_TAG" ]] || continue
+            if ! cli="$(gh api "repos/aimansour/opencode/releases/tags/a11y-$tag" 2>/dev/null)"; then
+              echo "CLI for $tag is not yet released; retry on the next scheduled run."
+              break
+            fi
+            if [[ "$(jq -r '.draft' <<< "$cli")" == true || "$(jq '.assets | length' <<< "$cli")" -ne 14 ]]; then
+              echo "CLI release for $tag is incomplete; block desktop publishing." >&2
+              exit 1
+            fi
+            desktop_tag="a11y-desktop-$tag"
+            if desktop="$(gh api "repos/aimansour/opencode/releases/tags/$desktop_tag" 2>/dev/null)"; then
+              if [[ "$(jq -r '.draft' <<< "$desktop")" == true || "$(jq '.assets | length' <<< "$desktop")" -ne 3 ]]; then
+                gh issue create -R aimansour/opencode --title "[a11y-release-blocked] incomplete $desktop_tag" \
+                  --body "The Windows desktop release is an incomplete draft or missing assets. Inspect https://github.com/aimansour/opencode/releases/tag/$desktop_tag and repair it manually before closing this issue."
+                exit 1
+              fi
+              continue
+            fi
+            {
+              echo "build=true"
+              echo "tag=$tag"
+              echo "pr_sha=$pr_sha"
+              echo "release_tag=$desktop_tag"
+            } >> "$GITHUB_OUTPUT"
+            echo "Selected Windows Desktop $tag based on personal CLI a11y-$tag."
+            break
+          done <<< "$tags"
+
+  build-windows-desktop:
+    needs: select
+    if: needs.select.outputs.build == 'true' && vars.PERSONAL_A11Y_STOP != 'true'
+    runs-on: windows-2025
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.select.outputs.tag }}
+      PR_SHA: ${{ needs.select.outputs.pr_sha }}
+      RELEASE_TAG: ${{ needs.select.outputs.release_tag }}
+      OPENCODE_CHANNEL: a11y
+      OPENCODE_CLI_TARGET: x86_64-pc-windows-msvc
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - name: Checkout independent automation
+        uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+          sparse-checkout: .github/scripts/personal-v2
+
+      - name: Checkout exact official V2 release
+        uses: actions/checkout@v4
+        with:
+          repository: anomalyco/opencode
+          ref: ${{ needs.select.outputs.tag }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Apply original PR, preserve exact tested CLI source, and brand Desktop
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          $commits = @(gh api repos/anomalyco/opencode/pulls/51084/commits --paginate --jq '.[].sha')
+          if (!$commits.Count -or $commits[-1] -ne $env:PR_SHA) { throw 'PR commits changed after selection.' }
+          git fetch --no-tags --depth=100 https://github.com/anomalyco/opencode.git refs/pull/51084/head
+          if ((git rev-parse FETCH_HEAD).Trim() -ne $env:PR_SHA) { throw 'PR ref changed; refusing to mix revisions.' }
+          git cherry-pick --no-commit $commits
+          $changed = @(git diff --cached --name-only)
+          if ($changed.Count -eq 0) { throw 'PR patch is empty.' }
+          python "$env:GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/brand.py" $PWD.Path
+          git add -A
+          git diff --cached --check
+          git commit -m "build(a11y): tested personal CLI source for $env:TAG"
+          git fetch --no-tags --depth=1 https://github.com/aimansour/opencode.git "refs/tags/a11y-$env:TAG"
+          if ((git rev-parse 'FETCH_HEAD^{tree}').Trim() -ne (git rev-parse 'HEAD^{tree}').Trim()) {
+            throw 'The patched CLI source does not match the already tested and published personal CLI tag.'
+          }
+          python "$env:GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/desktop_brand.py" $PWD.Path
+          git add -u
+          git diff --cached --check
+          git commit -m "build(desktop): independent Windows A11y identity for $env:TAG"
+          "OPENCODE_VERSION=$($env:TAG.Substring(1))" >> $env:GITHUB_ENV
+
+      - name: Download and hash-check the exact CLI built by the personal workflow
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = $env:TAG.Substring(1)
+          $name = "opencode-a11y-$version-windows-x64-baseline.zip"
+          gh release download "a11y-$env:TAG" -R aimansour/opencode --pattern $name --dir $env:RUNNER_TEMP
+          $release = gh api "repos/aimansour/opencode/releases/tags/a11y-$env:TAG" | ConvertFrom-Json
+          $asset = @($release.assets | Where-Object { $_.name -eq $name })
+          if ($asset.Count -ne 1 -or $asset[0].state -ne 'uploaded') { throw 'Missing tested Windows CLI archive.' }
+          $archive = Join-Path $env:RUNNER_TEMP $name
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($asset[0].digest -ne "sha256:$hash") { throw 'Personal CLI release archive hash mismatch.' }
+          $target = Join-Path $PWD.Path 'packages/cli/dist/cli-windows-x64-baseline'
+          Expand-Archive -LiteralPath $archive -DestinationPath $target -Force
+          $manifest = Get-Content (Join-Path $target 'package.json') -Raw | ConvertFrom-Json
+          if ($manifest.name -ne '@aimansour/cli-windows-x64-baseline' -or $manifest.version -ne $version) {
+            throw 'Wrong CLI distribution name or version.'
+          }
+          $binary = Join-Path $target 'bin/opencode-a11y.exe'
+          if (!(Test-Path $binary) -or (Get-Item $binary).Length -lt 1000000) { throw 'Personal CLI executable is missing.' }
+          "PERSONAL_CLI_SHA256=$((Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant())" >> $env:GITHUB_ENV
+
+      - name: Install frozen dependencies, typecheck and test Desktop
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          bun install --frozen-lockfile
+          bun run --cwd packages/session-ui typecheck
+          bun run --cwd packages/desktop typecheck
+          bun run --cwd packages/desktop test
+
+      - name: Build Desktop using the downloaded workflow-built personal CLI
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:OPENCODE_CLI_DIST = Join-Path $PWD.Path 'packages/cli/dist'
+          bun run --cwd packages/desktop prebuild
+          $bundled = 'packages/desktop/resources/opencode-cli.exe'
+          if (!(Test-Path $bundled)) { throw 'Prebuild did not embed the personal Windows CLI.' }
+          if ((Get-FileHash $bundled -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:PERSONAL_CLI_SHA256) {
+            throw 'Bundled CLI differs from the exact personal workflow-built executable.'
+          }
+          bun run --cwd packages/desktop build
+          Push-Location packages/desktop
+          try { bunx electron-builder --win --x64 --publish never --config electron-builder.config.ts }
+          finally { Pop-Location }
+
+      - name: Verify installer and packaged CLI before publication
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD.Path 'packages/desktop/dist'
+          $installers = @(Get-ChildItem $dist -File -Filter 'opencode-a11y-desktop-*-x64.exe')
+          if ($installers.Count -ne 1 -or $installers[0].Length -lt 1000000) { throw 'Expected exactly one non-empty x64 NSIS installer.' }
+          $unpacked = Join-Path $dist 'win-unpacked'
+          $embedded = Join-Path $unpacked 'resources/opencode-cli.exe'
+          $desktop = Join-Path $unpacked 'opencode-a11y-desktop.exe'
+          if (!(Test-Path $desktop) -or !(Test-Path $embedded)) { throw 'Packaged Desktop or CLI is missing.' }
+          if ((Get-FileHash $embedded -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:PERSONAL_CLI_SHA256) {
+            throw 'Packaged Desktop includes an unverified or official CLI.'
+          }
+          $version = (Get-Content (Join-Path $unpacked 'resources/opencode-cli.version') -Raw).Trim()
+          if ($version -ne $env:TAG.Substring(1)) { throw 'Packaged CLI version does not match the release.' }
+          $updateConfig = Join-Path $unpacked 'resources/app-update.yml'
+          if (Test-Path $updateConfig) {
+            if ((Get-Content $updateConfig -Raw) -match 'opencode\.ai|anomalyco/opencode') {
+              throw 'Personal Desktop contains an official updater endpoint.'
+            }
+          }
+          $out = Join-Path $env:GITHUB_WORKSPACE 'desktop-release'
+          New-Item $out -ItemType Directory -Force | Out-Null
+          Copy-Item $installers[0].FullName (Join-Path $out $installers[0].Name)
+          @(
+            "Official source: $env:TAG"
+            "Original accessibility PR: https://github.com/anomalyco/opencode/pull/51084"
+            "PR commit: $env:PR_SHA"
+            "Patched Desktop source: $(git rev-parse HEAD)"
+            "Tested personal CLI release: a11y-$env:TAG"
+            "Embedded CLI SHA256: $env:PERSONAL_CLI_SHA256"
+            "Build: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          ) | Set-Content (Join-Path $out 'BUILD_INFO.txt')
+          $installer = Get-ChildItem $out -Filter '*.exe' | Select-Object -First 1
+          "$((Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($installer.Name)" |
+            Set-Content (Join-Path $out 'SHA256SUMS')
+          "INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
+
+      - name: Recheck PR and push immutable patched Desktop source tag
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $live = gh api repos/anomalyco/opencode/pulls/51084 | ConvertFrom-Json
+          if ($live.merged -or $live.head.sha -ne $env:PR_SHA) { throw 'PR merged or changed; refuse Desktop release.' }
+          $ref = "refs/tags/$env:RELEASE_TAG"
+          $remote = @(git ls-remote https://github.com/aimansour/opencode.git $ref)
+          if ($remote.Count -gt 0) {
+            git fetch --no-tags --depth=1 https://github.com/aimansour/opencode.git $ref
+            if ((git rev-parse 'FETCH_HEAD^{tree}').Trim() -ne (git rev-parse 'HEAD^{tree}').Trim()) {
+              throw 'Existing desktop source tag differs from this verified build.'
+            }
+          } else {
+            $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GH_TOKEN"))
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push https://github.com/aimansour/opencode.git "HEAD:$ref"
+          }
+
+      - name: Publish draft only after checking all installer assets
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $live = gh api repos/anomalyco/opencode/pulls/51084 | ConvertFrom-Json
+          if ($live.merged -or $live.head.sha -ne $env:PR_SHA) { throw 'PR changed before publishing.' }
+          $out = Join-Path $env:GITHUB_WORKSPACE 'desktop-release'
+          $files = @(Get-ChildItem $out -File)
+          if ($files.Count -ne 3) { throw 'Expected installer, SHA256SUMS and provenance.' }
+          $notes = Join-Path $env:RUNNER_TEMP 'desktop-release-notes.md'
+          @(
+            "Personal OpenCode V2 $env:TAG Windows x64 Desktop with accessibility fix #51084."
+            ""
+            "Install separately from official OpenCode: name OpenCode A11y, app ID ai.aimansour.opencode.a11y, separate user data."
+            "The bundled opencode-a11y.exe was built by the personal CLI workflow for the same official V2 tag and its hash was checked before and after packaging."
+            "Official CLI and Desktop updaters are disabled. Install future personal Desktop releases manually from this fork."
+            "This is an unsigned personal Windows installer; Windows SmartScreen may display a warning."
+          ) | Set-Content $notes
+          gh release create $env:RELEASE_TAG @($files | ForEach-Object { $_.FullName }) -R aimansour/opencode --verify-tag --draft --title "OpenCode A11y Windows Desktop $env:TAG" --notes-file $notes
+          $release = gh api "repos/aimansour/opencode/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if (!$release.draft -or $release.assets.Count -ne 3) { throw 'Draft or asset count verification failed.' }
+          foreach ($file in $files) {
+            $matches = @($release.assets | Where-Object { $_.name -eq $file.Name -and $_.size -eq $file.Length -and $_.state -eq 'uploaded' })
+            if ($matches.Count -ne 1) { throw "Missing uploaded asset: $($file.Name)" }
+            $digest = "sha256:$((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())"
+            if ($matches[0].digest -ne $digest) { throw "Uploaded asset checksum differs: $($file.Name)" }
+          }
+          gh release edit $env:RELEASE_TAG -R aimansour/opencode --draft=false
+          $published = gh api "repos/aimansour/opencode/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($published.draft -or $published.assets.Count -ne 3) { throw 'Desktop release did not publish correctly.' }
+
+      - name: Block subsequent releases on a build, conflict, or publish failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $titles = @(gh issue list -R aimansour/opencode --state open --limit 1000 --json title --jq '.[].title')
+          if ($titles | Where-Object { $_ -match '\[a11y-release-blocked\]' }) { exit 0 }
+          gh issue create -R aimansour/opencode --title "[a11y-release-blocked] Windows Desktop $env:TAG" --body "Windows Desktop build, patch, source verification or release failed. Inspect $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID. Resolve manually and close this issue to resume both personal release workflows."
