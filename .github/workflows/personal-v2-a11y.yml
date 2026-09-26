@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   select:
-    if: github.repository == 'aimansour/opencode'
+    if: github.repository == 'aimansour/opencode' && vars.PERSONAL_A11Y_STOP != 'true'
     runs-on: ubuntu-24.04
     outputs:
       build: ${{ steps.pick.outputs.build }}
@@ -41,9 +41,12 @@ jobs:
             exit 1
           fi
           pr="$(gh api repos/anomalyco/opencode/pulls/51084)"
-          if [[ "$(jq -r '.state' <<< "$pr")" != open ]]; then
-            echo "PR #51084 is no longer open; personal releases are stopped."
+          if [[ "$(jq -r '.merged' <<< "$pr")" == true ]]; then
+            echo "PR #51084 was merged; personal releases are stopped."
             exit 0
+          fi
+          if [[ "$(jq -r '.state' <<< "$pr")" != open ]]; then
+            echo "PR #51084 is closed but unmerged; keep shipping the personal fix."
           fi
           if [[ "$(jq -r '.head.repo.full_name' <<< "$pr")" != aimansour/opencode ||
                 "$(jq -r '.head.ref' <<< "$pr")" != streaming-steps-a11y ||
@@ -137,7 +140,8 @@ jobs:
             echo "The PR changed during selection; refusing to mix revisions." >&2
             exit 1
           fi
-          git fetch --no-tags --depth=100 https://github.com/aimansour/opencode.git refs/heads/streaming-steps-a11y
+          # GitHub preserves the PR head ref after automatic closure, even if the fork branch is removed.
+          git fetch --no-tags --depth=100 https://github.com/anomalyco/opencode.git refs/pull/51084/head
           if [[ "$(git rev-parse FETCH_HEAD)" != "$PR_SHA" ]]; then
             echo "PR branch advanced during this run; retry on a new run." >&2
             exit 1
@@ -265,7 +269,7 @@ jobs:
         run: |
           set -euo pipefail
           live="$(gh api repos/anomalyco/opencode/pulls/51084)"
-          [[ "$(jq -r '.state' <<< "$live")" == open ]]
+          [[ "$(jq -r '.merged' <<< "$live")" == false ]]
           [[ "$(jq -r '.head.sha' <<< "$live")" == "$PR_SHA" ]]
           echo "The original PR is still open at the exact tested commit."
 
@@ -295,7 +299,7 @@ jobs:
           set -euo pipefail
           [[ "$(realpath "$(command -v opencode-a11y)")" == "$(realpath "$GITHUB_WORKSPACE/source/packages/cli/dist/cli-linux-x64-baseline/bin/opencode-a11y")" ]]
           live="$(gh api repos/anomalyco/opencode/pulls/51084)"
-          [[ "$(jq -r '.state' <<< "$live")" == open && "$(jq -r '.head.sha' <<< "$live")" == "$PR_SHA" ]] || { echo "PR merged or changed before publication; refusing release." >&2; exit 1; }
+          [[ "$(jq -r '.merged' <<< "$live")" == false && "$(jq -r '.head.sha' <<< "$live")" == "$PR_SHA" ]] || { echo "PR merged or changed before publication; refusing release." >&2; exit 1; }
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
           OpenCode V2 $TAG with the unmerged streaming accessibility fix from anomalyco/opencode#51084.
 
