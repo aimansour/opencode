@@ -21,7 +21,7 @@ const metainfoFpm = (appId: string) =>
   `${path.join(packageDir, "resources", `${appId}.metainfo.xml`)}=/usr/share/metainfo/${appId}.metainfo.xml`
 
 async function signWindows(configuration: { path: string }) {
-  if (process.platform !== "win32") return
+  if (process.platform !== "win32" || process.env.OPENCODE_CHANNEL === "a11y") return
   if (process.env.GITHUB_ACTIONS !== "true") return
 
   await execFileAsync(
@@ -45,7 +45,7 @@ export function macSignOptions(options: CustomMacSignOptions): CustomMacSignOpti
 
 const channel = (() => {
   const raw = process.env.OPENCODE_CHANNEL
-  if (raw === "dev" || raw === "beta" || raw === "prod") return raw
+  if (raw === "dev" || raw === "beta" || raw === "prod" || raw === "a11y") return raw
   if (raw === "latest") return "prod"
   return "dev"
 })()
@@ -54,6 +54,7 @@ const APP_IDS = {
   dev: "ai.opencode.desktop.dev",
   beta: "ai.opencode.desktop.beta",
   prod: "ai.opencode.desktop",
+  a11y: "ai.aimansour.opencode.a11y",
 } as const
 
 const getBase = (appId: string): Configuration => ({
@@ -162,6 +163,21 @@ function getConfig() {
   const base = getBase(appId)
 
   switch (channel) {
+    case "a11y": {
+      return {
+        ...base,
+        appId,
+        productName: "OpenCode A11y",
+        artifactName: "opencode-a11y-desktop-${version}-${os}-${arch}.${ext}",
+        // electron-builder creates NSIS update metadata even with --publish never.
+        // Use only the personal fork as the provider; the in-app updater remains disabled.
+        publish: { provider: "github", owner: "aimansour", repo: "opencode", channel: "a11y" },
+        protocols: [],
+        win: { ...base.win, executableName: "opencode-a11y-desktop" },
+        deb: { fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opencode-a11y", fpm: [metainfoFpm(appId)] },
+      }
+    }
     case "dev": {
       return {
         ...base,

@@ -3,7 +3,7 @@ import { Context, Effect, FileSystem, Layer, Path } from "effect"
 import { BackgroundServiceState } from "./background-service-state"
 import { cleanStages, DesktopCli } from "./desktop-cli"
 import { SidecarCredentials } from "./sidecar-credentials"
-import { sidecarProbe } from "./sidecar-probe"
+import { personalServiceFile, sidecarProbe } from "./sidecar-probe"
 
 export * as BackgroundService from "./background-service"
 
@@ -42,7 +42,7 @@ const connect = Effect.fn("BackgroundService.connect")(function* (mode: "initial
       file:
         isolated && process.env.OPENCODE_DESKTOP_SERVER_CHANNEL === "local"
           ? path.join(app.getPath("userData"), "opencode", "service-local.json")
-          : undefined,
+          : personalServiceFile(),
       version,
       command: [...cli.command, "serve", "--service", ...(isolated ? ["--hostname", "0.0.0.0", "--port", "0"] : [])],
       onStart: (reason, previousVersion) =>
