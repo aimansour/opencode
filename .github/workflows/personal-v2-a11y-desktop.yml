@@ -9,6 +9,11 @@ on:
         description: "Optional official V2 tag; empty picks the oldest unshipped Desktop version."
         required: false
         type: string
+      verify_only:
+        description: "Rebuild an existing personal Windows Desktop version without tagging or publishing. Requires upstream_tag."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -25,7 +30,6 @@ jobs:
     outputs:
       build: ${{ steps.pick.outputs.build }}
       tag: ${{ steps.pick.outputs.tag }}
-      pr_sha: ${{ steps.pick.outputs.pr_sha }}
       release_tag: ${{ steps.pick.outputs.release_tag }}
     steps:
       - id: pick
@@ -34,10 +38,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_TAG: ${{ inputs.upstream_tag || '' }}
+          VERIFY_ONLY: ${{ inputs.verify_only || 'false' }}
         run: |
           set -euo pipefail
           if [[ -n "$REQUESTED_TAG" && ! "$REQUESTED_TAG" =~ ^v2\.[0-9]+\.[0-9]+$ ]]; then
             echo "Invalid official V2 tag: $REQUESTED_TAG" >&2
+            exit 1
+          fi
+          if [[ "$VERIFY_ONLY" == true && -z "$REQUESTED_TAG" ]]; then
+            echo 'Verification-only runs must specify an already-published V2 tag.' >&2
             exit 1
           fi
           pr="$(gh api repos/anomalyco/opencode/pulls/51084)"
@@ -56,7 +65,6 @@ jobs:
             echo "Personal release stopped by an open issue."
             exit 0
           fi
-          pr_sha="$(jq -r '.head.sha' <<< "$pr")"
           tags="$(git ls-remote --refs --tags https://github.com/anomalyco/opencode.git 'refs/tags/v2.*' |
             awk '{sub("refs/tags/", "", $2); print $2}' |
             grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V)"
@@ -69,23 +77,35 @@ jobs:
               echo "CLI for $tag is not yet released; retry on the next scheduled run."
               break
             fi
-            if [[ "$(jq -r '.draft' <<< "$cli")" == true || "$(jq '.assets | length' <<< "$cli")" -ne 14 ]]; then
-              echo "CLI release for $tag is incomplete; block desktop publishing." >&2
+            required_cli="opencode-a11y-${tag#v}-windows-x64-baseline.zip"
+            if ! jq -e --arg required "$required_cli" '
+              .draft == false and (.assets | length == 14) and
+              any(.assets[]; .name == $required) and
+              all(.assets[]; .state == "uploaded" and .size > 0 and (.digest | test("^sha256:[0-9a-f]{64}$")))
+            ' <<< "$cli" >/dev/null; then
+              echo "CLI release for $tag is incomplete or lacks the verified Windows executable." >&2
               exit 1
             fi
             desktop_tag="a11y-desktop-$tag"
             if desktop="$(gh release view "$desktop_tag" -R aimansour/opencode --json isDraft,assets 2>/dev/null)"; then
-              if [[ "$(jq -r '.isDraft' <<< "$desktop")" == true || "$(jq '.assets | length' <<< "$desktop")" -ne 3 ]]; then
+              expected_installer="opencode-a11y-desktop-${tag#v}-win-x64.exe"
+              if ! jq -e --arg installer "$expected_installer" '
+                .isDraft == false and (.assets | length == 3) and
+                (([.assets[].name] | sort) == (["BUILD_INFO.txt", "SHA256SUMS", $installer] | sort)) and
+                all(.assets[]; .state == "uploaded" and .size > 0 and (.digest | test("^sha256:[0-9a-f]{64}$")))
+              ' <<< "$desktop" >/dev/null; then
                 gh issue create -R aimansour/opencode --title "[a11y-release-blocked] incomplete $desktop_tag" \
-                  --body "The Windows desktop release is an incomplete draft or missing assets. Inspect https://github.com/aimansour/opencode/releases/tag/$desktop_tag and repair it manually before closing this issue."
+                  --body "The Windows desktop release is a draft, lacks expected files, or has missing assets or hashes. Inspect https://github.com/aimansour/opencode/releases/tag/$desktop_tag and repair it manually before closing this issue."
                 exit 1
               fi
-              continue
+              [[ "$VERIFY_ONLY" == true ]] || continue
+            elif [[ "$VERIFY_ONLY" == true ]]; then
+              echo "Verification-only requested but $desktop_tag does not exist." >&2
+              exit 1
             fi
             {
               echo "build=true"
               echo "tag=$tag"
-              echo "pr_sha=$pr_sha"
               echo "release_tag=$desktop_tag"
             } >> "$GITHUB_OUTPUT"
             echo "Selected Windows Desktop $tag based on personal CLI a11y-$tag."
@@ -100,7 +120,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ needs.select.outputs.tag }}
-      PR_SHA: ${{ needs.select.outputs.pr_sha }}
       RELEASE_TAG: ${{ needs.select.outputs.release_tag }}
       OPENCODE_CHANNEL: a11y
       OPENCODE_CLI_TARGET: x86_64-pc-windows-msvc
@@ -113,14 +132,14 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/scripts/personal-v2
 
-      - name: Checkout exact official V2 release
+      - name: Checkout the exact already-tested personal CLI source tag
         uses: actions/checkout@v4
         with:
-          repository: anomalyco/opencode
-          ref: ${{ needs.select.outputs.tag }}
+          repository: aimansour/opencode
+          ref: a11y-${{ needs.select.outputs.tag }}
           path: source
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: 2
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -130,33 +149,21 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Apply original PR, preserve exact tested CLI source, and brand Desktop
+      - name: Brand only the already-tested personal source for Windows Desktop
         shell: pwsh
         working-directory: source
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          $commits = @(gh api repos/anomalyco/opencode/pulls/51084/commits --paginate --jq '.[].sha')
-          if (!$commits.Count -or $commits[-1] -ne $env:PR_SHA) { throw 'PR commits changed after selection.' }
-          git fetch --no-tags --depth=100 https://github.com/anomalyco/opencode.git refs/pull/51084/head
-          if ((git rev-parse FETCH_HEAD).Trim() -ne $env:PR_SHA) { throw 'PR ref changed; refusing to mix revisions.' }
-          git cherry-pick --no-commit $commits
-          $changed = @(git diff --cached --name-only)
-          if ($changed.Count -eq 0) { throw 'PR patch is empty.' }
-          python "$env:GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/brand.py" $PWD.Path
-          git add -A
-          git diff --cached --check
-          git commit -m "build(a11y): tested personal CLI source for $env:TAG"
-          git fetch --no-tags --depth=1 https://github.com/aimansour/opencode.git "refs/tags/a11y-$env:TAG"
-          if ((git rev-parse 'FETCH_HEAD^{tree}').Trim() -ne (git rev-parse 'HEAD^{tree}').Trim()) {
-            throw 'The patched CLI source does not match the already tested and published personal CLI tag.'
-          }
+          $sourceCommit = (git rev-parse HEAD).Trim()
+          if ($sourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'Personal source tag did not resolve to a commit.' }
           python "$env:GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/desktop_brand.py" $PWD.Path
           git add -u
           git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m "build(desktop): independent Windows A11y identity for $env:TAG"
+          "PERSONAL_SOURCE_SHA=$sourceCommit" >> $env:GITHUB_ENV
           "OPENCODE_VERSION=$($env:TAG.Substring(1))" >> $env:GITHUB_ENV
 
       - name: Download and hash-check the exact CLI built by the personal workflow
@@ -167,13 +174,26 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $version = $env:TAG.Substring(1)
           $name = "opencode-a11y-$version-windows-x64-baseline.zip"
-          gh release download "a11y-$env:TAG" -R aimansour/opencode --pattern $name --dir $env:RUNNER_TEMP
+          gh release download "a11y-$env:TAG" -R aimansour/opencode --pattern $name --pattern BUILD_INFO.txt --dir $env:RUNNER_TEMP
           $release = gh api "repos/aimansour/opencode/releases/tags/a11y-$env:TAG" | ConvertFrom-Json
+          if ($release.draft -or $release.assets.Count -ne 14) { throw 'Personal CLI release is incomplete.' }
           $asset = @($release.assets | Where-Object { $_.name -eq $name })
           if ($asset.Count -ne 1 -or $asset[0].state -ne 'uploaded') { throw 'Missing tested Windows CLI archive.' }
           $archive = Join-Path $env:RUNNER_TEMP $name
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($asset[0].digest -ne "sha256:$hash") { throw 'Personal CLI release archive hash mismatch.' }
+          $infoAsset = @($release.assets | Where-Object { $_.name -eq 'BUILD_INFO.txt' })
+          $infoPath = Join-Path $env:RUNNER_TEMP 'BUILD_INFO.txt'
+          if ($infoAsset.Count -ne 1 -or $infoAsset[0].state -ne 'uploaded') { throw 'Missing CLI build provenance.' }
+          $infoHash = (Get-FileHash $infoPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($infoAsset[0].digest -ne "sha256:$infoHash") { throw 'CLI provenance hash mismatch.' }
+          $infoText = Get-Content $infoPath -Raw
+          $sourceMatch = [regex]::Match($infoText, '(?m)^Personal source commit: ([0-9a-f]{40})\r?$')
+          $prMatch = [regex]::Match($infoText, '(?m)^PR commit: ([0-9a-f]{40})\r?$')
+          if (!$sourceMatch.Success -or !$prMatch.Success -or $sourceMatch.Groups[1].Value -ne $env:PERSONAL_SOURCE_SHA) {
+            throw 'The Windows Desktop source does not match the verified CLI release source.'
+          }
+          "SOURCE_PR_SHA=$($prMatch.Groups[1].Value)" >> $env:GITHUB_ENV
           $target = Join-Path $PWD.Path 'packages/cli/dist/cli-windows-x64-baseline'
           Expand-Archive -LiteralPath $archive -DestinationPath $target -Force
           $manifest = Get-Content (Join-Path $target 'package.json') -Raw | ConvertFrom-Json
@@ -242,7 +262,8 @@ jobs:
           @(
             "Official source: $env:TAG"
             "Original accessibility PR: https://github.com/anomalyco/opencode/pull/51084"
-            "PR commit: $env:PR_SHA"
+            "PR commit from verified CLI release: $env:SOURCE_PR_SHA"
+            "Verified personal CLI source: $env:PERSONAL_SOURCE_SHA"
             "Patched Desktop source: $(git rev-parse HEAD)"
             "Tested personal CLI release: a11y-$env:TAG"
             "Embedded CLI SHA256: $env:PERSONAL_CLI_SHA256"
@@ -254,13 +275,14 @@ jobs:
           "INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
 
       - name: Recheck PR and push immutable patched Desktop source tag
+        if: ${{ !inputs.verify_only }}
         shell: pwsh
         working-directory: source
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $live = gh api repos/anomalyco/opencode/pulls/51084 | ConvertFrom-Json
-          if ($live.merged -or $live.head.sha -ne $env:PR_SHA) { throw 'PR merged or changed; refuse Desktop release.' }
+          if ($live.merged) { throw 'PR was merged; refuse Desktop release.' }
           $ref = "refs/tags/$env:RELEASE_TAG"
           $remote = @(git ls-remote https://github.com/aimansour/opencode.git $ref)
           if ($remote.Count -gt 0) {
@@ -274,13 +296,14 @@ jobs:
           }
 
       - name: Publish draft only after checking all installer assets
+        if: ${{ !inputs.verify_only }}
         shell: pwsh
         working-directory: source
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $live = gh api repos/anomalyco/opencode/pulls/51084 | ConvertFrom-Json
-          if ($live.merged -or $live.head.sha -ne $env:PR_SHA) { throw 'PR changed before publishing.' }
+          if ($live.merged) { throw 'PR was merged before publishing.' }
           $out = Join-Path $env:GITHUB_WORKSPACE 'desktop-release'
           $files = @(Get-ChildItem $out -File)
           if ($files.Count -ne 3) { throw 'Expected installer, SHA256SUMS and provenance.' }

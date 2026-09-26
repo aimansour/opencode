@@ -44,14 +44,22 @@ on their target OS.
 The dedicated Windows Desktop release is tagged a11y-desktop-v2.x.y and
 contains a Windows x64 NSIS installer, BUILD_INFO.txt, and SHA256SUMS.
 Its product name is OpenCode A11y and its application identity and
-user-data directory are distinct from official OpenCode. It bundles
-opencode-a11y.exe from the matching personal CLI Release. Both the
-official Electron updater and bundled CLI's official updater are disabled.
+user-data directory are distinct from official OpenCode. The Windows builder
+checks out the immutable source tag used by the tested personal CLI Release
+(not the mutable PR head) and verifies that source against the hash-checked
+CLI BUILD_INFO.txt before packaging. It bundles opencode-a11y.exe
+from the matching personal CLI Release. Both the official Electron updater and
+bundled CLI's official updater are disabled.
 The personal installer is unsigned and may trigger SmartScreen; verify
 SHA256SUMS before installing. The personal Desktop doesn't take over the
 official opencode:// protocol. Desktop updates are published automatically
 but must be installed manually from the next personal Desktop Release.
-Only Windows x64 Desktop is built and packaged by this workflow.
+Only Windows x64 Desktop is built and packaged by this workflow. To test a
+future workflow change without modifying a published release, manually
+dispatch it with upstream_tag set to an already-published V2 tag and
+verify_only=true. This rebuilds, tests, packages and checks the installer,
+but does not push source tags or publish assets. A failed verification still
+blocks subsequent releases until manually resolved.
 
 ## macOS and Linux Desktop
 
