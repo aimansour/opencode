@@ -4,13 +4,14 @@ import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { Updater } from "../../services/updater"
 import { handlePromptErrors } from "../../ui/prompt"
-import { OPENCODE_VERSION } from "../../version"
+import { OPENCODE_CHANNEL, OPENCODE_VERSION } from "../../version"
 import { stripVTControlCharacters } from "node:util"
 
 export default Runtime.handler(
   Commands.commands.upgrade,
   Effect.fn("cli.upgrade")(
     function* (input) {
+      if (OPENCODE_CHANNEL === "a11y") return yield* Effect.fail(new Error("This personal CLI only updates through https://github.com/aimansour/opencode/releases; official upgrade is disabled."))
       intro("Upgrade")
       const updater = yield* Updater.Service
       const method = Option.getOrUndefined(input.method) ?? (yield* updater.method())
