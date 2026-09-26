@@ -165,7 +165,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/brand.py" "$PWD"
-          python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/desktop_brand.py" "$PWD"
           git diff --check
           git diff --cached --check
           git add -A
