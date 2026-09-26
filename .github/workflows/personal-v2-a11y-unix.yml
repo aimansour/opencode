@@ -177,12 +177,28 @@ jobs:
           root="source/packages/desktop/dist"
           if [[ "$RUNNER_OS" == macOS ]]; then extensions=(dmg zip); else extensions=(AppImage deb rpm); fi
           for ext in "${extensions[@]}"; do
-            # macOS ships Bash 3.2, which has no mapfile/readarray.
-            files=()
-            while IFS= read -r file; do files+=("$file"); done < <(find "$root" -maxdepth 1 -type f -name "opencode-a11y-desktop-*-${{ matrix.flavor }}.$ext")
-            [[ "${#files[@]}" == 1 ]] || { echo "Expected one personal $ext package; found ${#files[@]}" >&2; exit 1; }
-            test -s "${files[0]}"
-            cp "${files[0]}" desktop-assets/
+            # electron-builder uses distribution architecture names for Linux
+            # (x86_64/amd64/aarch64), not the matrix's x64/arm64 flavor.
+            # Verify the exact raw output, then give the Release a stable name.
+            if [[ "$RUNNER_OS" == Linux ]]; then
+              case "${{ matrix.flavor }}:$ext" in
+                linux-x64:AppImage|linux-x64:rpm) raw_arch=x86_64 ;;
+                linux-x64:deb) raw_arch=amd64 ;;
+                linux-arm64:AppImage|linux-arm64:deb) raw_arch=arm64 ;;
+                linux-arm64:rpm) raw_arch=aarch64 ;;
+                *) echo "Unknown Linux package target" >&2; exit 1 ;;
+              esac
+              raw="$root/opencode-a11y-desktop-${TAG#v}-linux-$raw_arch.$ext"
+              [[ -s "$raw" ]] || { echo "Missing expected personal Linux package: $raw" >&2; exit 1; }
+              cp "$raw" "desktop-assets/opencode-a11y-desktop-${TAG#v}-${{ matrix.flavor }}.$ext"
+            else
+              # macOS ships Bash 3.2, which has no mapfile/readarray.
+              files=()
+              while IFS= read -r file; do files+=("$file"); done < <(find "$root" -maxdepth 1 -type f -name "opencode-a11y-desktop-*-${{ matrix.flavor }}.$ext")
+              [[ "${#files[@]}" == 1 ]] || { echo "Expected one personal $ext package; found ${#files[@]}" >&2; exit 1; }
+              test -s "${files[0]}"
+              cp "${files[0]}" desktop-assets/
+            fi
           done
           actual="$(find desktop-assets -maxdepth 1 -type f ! -name 'SOURCE_TREE_*' | wc -l | tr -d ' ')"
           [[ "$actual" == "${{ matrix.total }}" ]]

@@ -17,7 +17,7 @@ Each workflow also supports manual Actions dispatch with an official V2 tag.
 Closing the PR without merging it, including automatic inactivity closure,
 does NOT stop personal releases. All workflows stop after the PR is
 actually merged, or when you explicitly set the fork's Actions repository
-variable PERSONAL_A11Y_STOP to true. You can also disable both workflows
+variable PERSONAL_A11Y_STOP to true. You can also disable all three workflows
 under Actions, or open an issue beginning [a11y-release-stop]. The original
 PR branch is never edited by the release automation.
 
@@ -86,5 +86,5 @@ update of each user's computer.
 
 If fork Actions are disabled, enable them on the fork. To stop all
 pipelines, set PERSONAL_A11Y_STOP=true under Settings > Secrets and
-variables > Actions > Variables, or disable both workflows. Do not edit
+variables > Actions > Variables, or disable all three workflows. Do not edit
 the PR branch to manage releases.
