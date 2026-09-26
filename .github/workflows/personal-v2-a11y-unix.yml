@@ -55,7 +55,10 @@ jobs:
             release_tag="a11y-desktop-unix-$tag"
             existing="$(gh api 'repos/aimansour/opencode/releases?per_page=100' |
               jq -c --arg tag "$release_tag" '[.[] | select(.tag_name == $tag)] | if length == 0 then empty elif length == 1 then .[0] else error("duplicate tag") end')"
-            if [[ -z "$existing" ]]; then existing="$(gh api "repos/aimansour/opencode/releases/tags/$release_tag" 2>/dev/null || true)"; fi
+            if [[ -z "$existing" ]]; then
+              # gh may print a JSON 404 response to stdout even when it exits nonzero.
+              if ! existing="$(gh api "repos/aimansour/opencode/releases/tags/$release_tag" 2>/dev/null)"; then existing=""; fi
+            fi
             if [[ -n "$existing" ]]; then
               if [[ "$(jq -r .draft <<< "$existing")" == true ||
                     "$(jq '[.assets[] | select(.size > 0 and .state == "uploaded" and (.digest | startswith("sha256:")))] | length' <<< "$existing")" -ne 12 ]]; then
