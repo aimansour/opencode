@@ -1,12 +1,13 @@
 param(
   [Parameter(Mandatory = $true)][string]$Installer,
   [Parameter(Mandatory = $true)][string]$ExpectedCliHash,
-  [Parameter(Mandatory = $true)][string]$ReportDir
+  [Parameter(Mandatory = $true)][string]$ReportDir,
+  [switch]$AllowLegacyInstall
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null
-$summary = @{ installer = (Resolve-Path $Installer).Path; installed = $false; ui = $false }
+$summary = @{ installer = (Resolve-Path $Installer).Path; installed = $false; ui = $false; legacyDiagnostic = $AllowLegacyInstall.IsPresent }
 try {
   if ($ExpectedCliHash -notmatch '^[a-f0-9]{64}$') { throw 'Invalid expected personal CLI hash.' }
   $programs = Join-Path $env:LOCALAPPDATA 'Programs'
@@ -38,11 +39,13 @@ try {
   } while ((Get-Date) -lt $deadline)
   if ($found.Count -ne 1) { throw "Expected one installed personal Desktop exe; found $($found.Count)." }
   $desktop = $found[0].FullName
-  if ([IO.Path]::GetFullPath((Split-Path $desktop)) -ne [IO.Path]::GetFullPath($expectedDirectory)) {
-    throw "Personal Desktop installed into an unsafe/shared directory: $desktop"
+  if (!$AllowLegacyInstall) {
+    if ([IO.Path]::GetFullPath((Split-Path $desktop)) -ne [IO.Path]::GetFullPath($expectedDirectory)) {
+      throw "Personal Desktop installed into an unsafe/shared directory: $desktop"
+    }
+    if (!(Test-Path $sentinel)) { throw 'Personal installer modified the simulated official OpenCode directory.' }
+    $summary.isolatedInstallDirectory = $expectedDirectory
   }
-  if (!(Test-Path $sentinel)) { throw 'Personal installer modified the simulated official OpenCode directory.' }
-  $summary.isolatedInstallDirectory = $expectedDirectory
   $root = Split-Path $desktop
   $embedded = Join-Path $root 'resources/opencode-cli.exe'
   $versionFile = Join-Path $root 'resources/opencode-cli.version'

@@ -60,7 +60,9 @@ jobs:
       - name: Install the NSIS package and prove the GUI renders
         shell: pwsh
         run: |
-          ./automation/.github/scripts/personal-v2/windows_installer_smoke.ps1 -Installer $env:SMOKE_INSTALLER -ExpectedCliHash $env:SMOKE_CLI_HASH -ReportDir "$env:GITHUB_WORKSPACE/smoke-output"
+          # Diagnostic-only: old flagged releases may use the obsolete shared install directory.
+          # The production Desktop workflow never passes -AllowLegacyInstall.
+          ./automation/.github/scripts/personal-v2/windows_installer_smoke.ps1 -Installer $env:SMOKE_INSTALLER -ExpectedCliHash $env:SMOKE_CLI_HASH -ReportDir "$env:GITHUB_WORKSPACE/smoke-output" -AllowLegacyInstall
       - uses: actions/upload-artifact@v4
         if: always()
         with:
