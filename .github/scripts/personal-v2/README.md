@@ -54,7 +54,12 @@ CLI BUILD_INFO.txt before packaging. It bundles opencode-a11y.exe
 from the matching personal CLI Release. Both the official Electron updater and
 bundled CLI's official updater are disabled.
 The personal installer is unsigned and may trigger SmartScreen; verify
-SHA256SUMS before installing. The personal Desktop doesn't take over the
+SHA256SUMS before installing. Windows releases must now pass a real NSIS
+installation and installed-app GUI startup smoke test on a Windows runner:
+the test rejects a blank renderer, a splash that never finishes, and a local
+CLI server startup error. The personal Desktop uses the same
+opencode-a11y/service-a11y.json registration as its branded CLI, never the
+official OpenCode service registry. The personal Desktop doesn't take over the
 official opencode:// protocol. Desktop updates are published automatically
 but must be installed manually from the next personal Desktop Release.
 Only Windows x64 Desktop is built and packaged by this workflow. To test a

@@ -67,4 +67,21 @@ change(builder, '  switch (channel) {\n    case "dev": {', '''  switch (channel)
 metainfo = "packages/desktop/scripts/copy-metainfo.ts"
 change(metainfo, 'const appId = channel === "prod" ? "ai.opencode.desktop" :', 'const appId = channel === "a11y" ? "ai.aimansour.opencode.a11y" : channel === "prod" ? "ai.opencode.desktop" :')
 change(metainfo, 'const productName = channel === "prod" ? "OpenCode" :', 'const productName = channel === "a11y" ? "OpenCode A11y" : channel === "prod" ? "OpenCode" :')
+
+# The branded CLI registers its service under the personal global state tree and
+# service-a11y.json. Electron must discover/ensure that same file, never the
+# official opencode/service.json or a service belonging to another channel.
+probe = "packages/desktop/src/main/service/sidecar-probe.ts"
+change(probe, 'import { app } from "electron"', 'import { app } from "electron"\nimport { CHANNEL } from "../constants"')
+change(probe, 'let probe: Promise<Endpoint | undefined> | undefined', '''let probe: Promise<Endpoint | undefined> | undefined
+
+export function personalServiceFile() {
+  if (CHANNEL !== "a11y") return undefined
+  const state = process.env.XDG_STATE_HOME ?? path.join(app.getPath("home"), ".local", "state")
+  return path.join(state, "opencode-a11y", "service-a11y.json")
+}''')
+change(probe, 'Service.discover({ version })', 'Service.discover({ version, file: personalServiceFile() })')
+service = "packages/desktop/src/main/service/background-service.ts"
+change(service, 'import { sidecarProbe } from "./sidecar-probe"', 'import { personalServiceFile, sidecarProbe } from "./sidecar-probe"')
+change(service, '          : undefined,\n      version,', '          : personalServiceFile(),\n      version,')
 print("Personal Windows Desktop identity, bundled CLI, and updater isolation applied.")
