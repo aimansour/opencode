@@ -13,12 +13,14 @@ supplying a specific official V2 tag. It ships one previously unpublished
 official version per run, oldest first, and will stop automatically when
 the original PR is closed or merged.
 
-If cherry-picking or version-dependent branding breaks, the workflow
-creates an issue starting with [a11y-release-blocked] and **all subsequent
-scheduled runs skip releases** until you fix the PR or branding script
-and close the blocking issue. Tests, Chromium accessibility regression,
-the CLI build, and a smoke test must all succeed before publishing. Other
-build failures never publish assets but are retried on the next run.
+If cherry-picking, version-dependent branding, tests, artifact verification,
+or publishing breaks, the workflow creates an issue starting with
+[a11y-release-blocked]. **All subsequent scheduled runs skip releases**
+until you resolve the problem and close the blocking issue. The Chromium
+accessibility regression, CLI build, per-target executable checks, and
+workflow-built CLI smoke test must succeed before publishing. If GitHub
+leaves an incomplete draft Release, the selector also opens a blocking
+issue instead of silently treating that draft as a finished release.
 
 The workflow generates a dedicated tag (a11y-v2.x.y) pointing to the
 precise patched and branded source commit and publishes all 12 cross-

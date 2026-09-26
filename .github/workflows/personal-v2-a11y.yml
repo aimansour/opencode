@@ -66,7 +66,14 @@ jobs:
             [[ "$tag" == v2.0.18 ]] && eligible=1
             [[ "$eligible" == 1 ]] || continue
             [[ -z "$REQUESTED_TAG" || "$tag" == "$REQUESTED_TAG" ]] || continue
-            if gh release view "a11y-$tag" --repo aimansour/opencode >/dev/null 2>&1; then
+            if existing="$(gh release view "a11y-$tag" --repo aimansour/opencode --json isDraft --jq .isDraft 2>/dev/null)"; then
+              if [[ "$existing" == true ]]; then
+                title="[a11y-release-blocked] $tag incomplete draft"
+                body="A draft personal release exists for $tag. Inspect its assets and the previous Actions run before deleting, completing, or retrying it: https://github.com/aimansour/opencode/releases/tag/a11y-$tag . Close this issue only after manual resolution."
+                gh issue create --repo aimansour/opencode --title "$title" --body "$body"
+                echo "A draft release needs manual resolution; future runs are blocked."
+                exit 0
+              fi
               continue
             fi
             # V2 uses official stable tags, not GitHub Release objects.
@@ -230,6 +237,9 @@ jobs:
           for dir in packages/cli/dist/cli-*; do
             [[ -d "$dir" ]] || { echo "Missing CLI output: $dir" >&2; exit 1; }
             target="${dir##*/cli-}"
+            binary="$dir/bin/opencode-a11y"
+            [[ "$target" == windows-* ]] && binary="$binary.exe"
+            [[ -s "$binary" ]] || { echo "Missing built CLI for $target: $binary" >&2; exit 1; }
             base="opencode-a11y-${TAG#v}-$target"
             if [[ "$target" == windows-* ]]; then
               (cd "$dir" && zip -q -r "$out/$base.zip" .)
@@ -284,6 +294,8 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$(realpath "$(command -v opencode-a11y)")" == "$(realpath "$GITHUB_WORKSPACE/source/packages/cli/dist/cli-linux-x64-baseline/bin/opencode-a11y")" ]]
+          live="$(gh api repos/anomalyco/opencode/pulls/51084)"
+          [[ "$(jq -r '.state' <<< "$live")" == open && "$(jq -r '.head.sha' <<< "$live")" == "$PR_SHA" ]] || { echo "PR merged or changed before publication; refusing release." >&2; exit 1; }
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
           OpenCode V2 $TAG with the unmerged streaming accessibility fix from anomalyco/opencode#51084.
 
@@ -296,3 +308,16 @@ jobs:
             --verify-tag \
             --title "OpenCode A11y $TAG" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Block future runs if verification or publishing fails
+        if: ${{ failure() && steps.patch.outcome != 'failure' && steps.brand.outcome != 'failure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh issue list --repo aimansour/opencode --state open --limit 1000 --json title --jq '.[].title' | grep -Fq '[a11y-release-blocked]'; then
+            echo 'A blocking issue is already open.'
+            exit 0
+          fi
+          gh issue create --repo aimansour/opencode \
+            --title "[a11y-release-blocked] $TAG verification or publishing failed" \
+            --body "A verification, cross-platform build, artifact check, or publishing step failed. Review $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID and check whether a draft or partial release exists. Resolve the failure manually, then close this issue to resume scheduled releases."
