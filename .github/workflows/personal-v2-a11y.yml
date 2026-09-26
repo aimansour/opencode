@@ -1,0 +1,298 @@
+name: Personal V2 A11y CLI
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional official V2 tag, such as v2.0.18. Empty selects the oldest unshipped release."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: personal-v2-a11y
+  cancel-in-progress: false
+
+jobs:
+  select:
+    if: github.repository == 'aimansour/opencode'
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.pick.outputs.build }}
+      tag: ${{ steps.pick.outputs.tag }}
+      pr_sha: ${{ steps.pick.outputs.pr_sha }}
+      release_tag: ${{ steps.pick.outputs.release_tag }}
+    steps:
+      - id: pick
+        name: Check PR, blocker, and official V2 releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$REQUESTED_TAG" && ! "$REQUESTED_TAG" =~ ^v2\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid official tag: $REQUESTED_TAG" >&2
+            exit 1
+          fi
+          pr="$(gh api repos/anomalyco/opencode/pulls/51084)"
+          if [[ "$(jq -r '.state' <<< "$pr")" != open ]]; then
+            echo "PR #51084 is no longer open; personal releases are stopped."
+            exit 0
+          fi
+          if [[ "$(jq -r '.head.repo.full_name' <<< "$pr")" != aimansour/opencode ||
+                "$(jq -r '.head.ref' <<< "$pr")" != streaming-steps-a11y ||
+                "$(jq -r '.base.ref' <<< "$pr")" != v2 ]]; then
+            echo "PR ownership or branch changed. Refusing to build." >&2
+            exit 1
+          fi
+          open_issues="$(gh issue list --repo aimansour/opencode --state open --limit 1000 --json title --jq '.[].title')"
+          if grep -Fq '[a11y-release-blocked]' <<< "$open_issues"; then
+            echo "An open release-blocker issue needs manual resolution; no build or release."
+            exit 0
+          fi
+          pr_sha="$(jq -r '.head.sha' <<< "$pr")"
+          tags="$(git ls-remote --refs --tags https://github.com/anomalyco/opencode.git 'refs/tags/v2.*' |
+            awk '{sub("refs/tags/", "", $2); print $2}' |
+            grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V)"
+          eligible=0
+          selected=""
+          while IFS= read -r tag; do
+            [[ "$tag" == v2.0.18 ]] && eligible=1
+            [[ "$eligible" == 1 ]] || continue
+            [[ -z "$REQUESTED_TAG" || "$tag" == "$REQUESTED_TAG" ]] || continue
+            if gh release view "a11y-$tag" --repo aimansour/opencode >/dev/null 2>&1; then
+              continue
+            fi
+            # V2 uses official stable tags, not GitHub Release objects.
+            selected="$tag"
+            break
+          done <<< "$tags"
+          if [[ -z "$selected" ]]; then
+            echo "No eligible unshipped official V2 release."
+            exit 0
+          fi
+          {
+            echo "build=true"
+            echo "tag=$selected"
+            echo "pr_sha=$pr_sha"
+            echo "release_tag=a11y-$selected"
+          } >> "$GITHUB_OUTPUT"
+          echo "Selected $selected with PR commit $pr_sha"
+
+  build-and-release:
+    needs: select
+    if: needs.select.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.select.outputs.tag }}
+      PR_SHA: ${{ needs.select.outputs.pr_sha }}
+      RELEASE_TAG: ${{ needs.select.outputs.release_tag }}
+    steps:
+      - name: Get independent automation scripts from the fork's default branch
+        uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+          sparse-checkout: .github/scripts/personal-v2
+
+      - name: Get the exact official V2 release source
+        uses: actions/checkout@v4
+        with:
+          repository: anomalyco/opencode
+          ref: ${{ needs.select.outputs.tag }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install the Bun version required by upstream
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - id: patch
+        name: Apply every commit in the open PR without modifying its branch
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          mapfile -t commits < <(gh api repos/anomalyco/opencode/pulls/51084/commits --paginate --jq '.[].sha')
+          if [[ ${#commits[@]} -eq 0 || "${commits[-1]}" != "$PR_SHA" ]]; then
+            echo "The PR changed during selection; refusing to mix revisions." >&2
+            exit 1
+          fi
+          git fetch --no-tags --depth=100 https://github.com/aimansour/opencode.git refs/heads/streaming-steps-a11y
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$PR_SHA" ]]; then
+            echo "PR branch advanced during this run; retry on a new run." >&2
+            exit 1
+          fi
+          for sha in "${commits[@]}"; do git cat-file -e "$sha^{commit}"; done
+          if ! git cherry-pick --no-commit "${commits[@]}"; then
+            git status --short
+            echo "Real cherry-pick conflict or incompatible change; publication blocked." >&2
+            exit 1
+          fi
+          if git diff --cached --quiet; then
+            echo "Patch is empty; refusing to ship without a verified fix." >&2
+            exit 1
+          fi
+
+      - id: brand
+        name: Apply fail-closed personal identity and updater isolation
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/brand.py" "$PWD"
+          git diff --check
+          git diff --cached --check
+          git add -A
+          git commit -m "build(a11y): apply PR #51084 to $TAG with personal CLI identity"
+          {
+            echo "OPENCODE_CHANNEL=a11y"
+            echo "OPENCODE_VERSION=${TAG#v}"
+            echo "BUN_COMPILE_RELEASE=bun-v1.4.2"
+          } >> "$GITHUB_ENV"
+
+      - name: Open a blocking issue if patch or branding needs manual resolution
+        if: ${{ failure() && (steps.patch.outcome == 'failure' || steps.brand.outcome == 'failure') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="[a11y-release-blocked] $TAG"
+          body="The personal OpenCode V2 workflow stopped before building $TAG because the PR patch or fail-closed identity changes could not be applied. Review the run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} . PR: https://github.com/anomalyco/opencode/pull/51084 . No release was published. Resolve the conflict or adapt the branding script, then close this issue to let the scheduled workflow resume."
+          gh issue create --repo aimansour/opencode --title "$title" --body "$body"
+
+      - name: Install pinned upstream dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+
+      - name: Validate the a11y change and the CLI
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun run lint
+          bun run --cwd packages/session-ui typecheck
+          bun run --cwd packages/app typecheck
+          bun run --cwd packages/cli typecheck
+          bun run --cwd packages/session-ui test
+
+      - name: Run the actual streaming accessibility regression in Chromium
+        working-directory: source/packages/app
+        shell: bash
+        run: |
+          set -euo pipefail
+          bunx playwright install --with-deps chromium
+          bunx playwright test e2e/regression/session-timeline-accessibility.spec.ts --workers=1
+
+      - name: Compile every official V2 target with the personal CLI name and embedded app
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun run --cwd packages/cli script/build.ts
+          test -x packages/cli/dist/cli-linux-x64-baseline/bin/opencode-a11y
+          echo "$PWD/packages/cli/dist/cli-linux-x64-baseline/bin" >> "$GITHUB_PATH"
+
+      - name: Verify that PATH resolves to the CLI built by this workflow
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$PWD/packages/cli/dist/cli-linux-x64-baseline/bin/opencode-a11y"
+          resolved="$(command -v opencode-a11y)"
+          [[ "$(realpath "$resolved")" == "$(realpath "$expected")" ]]
+          version="$(opencode-a11y --version)"
+          [[ "$version" == *"${TAG#v}"* ]]
+          opencode-a11y --help >/dev/null
+          echo "Running the workflow-built CLI at $resolved ($version)"
+
+      - name: Package all target binaries and provenance
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/release-assets"
+          mkdir -p "$out"
+          for dir in packages/cli/dist/cli-*; do
+            [[ -d "$dir" ]] || { echo "Missing CLI output: $dir" >&2; exit 1; }
+            target="${dir##*/cli-}"
+            base="opencode-a11y-${TAG#v}-$target"
+            if [[ "$target" == windows-* ]]; then
+              (cd "$dir" && zip -q -r "$out/$base.zip" .)
+            else
+              tar -czf "$out/$base.tar.gz" -C "$dir" .
+            fi
+          done
+          count="$(find "$out" -maxdepth 1 -type f | wc -l)"
+          [[ "$count" -eq 12 ]] || { echo "Expected 12 platform archives; found $count." >&2; exit 1; }
+          {
+            echo "Upstream official tag: $TAG"
+            echo "Upstream source commit: $(git rev-parse HEAD^)"
+            echo "Personal source commit: $(git rev-parse HEAD)"
+            echo "Accessibility PR: https://github.com/anomalyco/opencode/pull/51084"
+            echo "PR commit: $PR_SHA"
+            echo "Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$out/BUILD_INFO.txt"
+          (cd "$out" && sha256sum opencode-a11y-* > SHA256SUMS && sha256sum --check SHA256SUMS)
+          opencode-a11y --version
+
+      - name: Recheck the PR immediately before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          live="$(gh api repos/anomalyco/opencode/pulls/51084)"
+          [[ "$(jq -r '.state' <<< "$live")" == open ]]
+          [[ "$(jq -r '.head.sha' <<< "$live")" == "$PR_SHA" ]]
+          echo "The original PR is still open at the exact tested commit."
+
+      - name: Push the exact patched source as a separate immutable release tag
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add personal https://github.com/aimansour/opencode.git
+          remote_sha="$(git ls-remote personal "refs/tags/$RELEASE_TAG" | awk '{print $1}')"
+          if [[ -n "$remote_sha" ]]; then
+            git fetch --no-tags personal "$remote_sha"
+            git diff --quiet "$remote_sha^{tree}" "HEAD^{tree}" || {
+              echo "Release tag exists but contains different source; manual resolution required." >&2
+              exit 1
+            }
+            echo "Reusing existing identical source release tag."
+          else
+            auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+              push personal "HEAD:refs/tags/$RELEASE_TAG"
+          fi
+
+      - name: Publish GitHub Release only after successful verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(realpath "$(command -v opencode-a11y)")" == "$(realpath "$GITHUB_WORKSPACE/source/packages/cli/dist/cli-linux-x64-baseline/bin/opencode-a11y")" ]]
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          OpenCode V2 $TAG with the unmerged streaming accessibility fix from anomalyco/opencode#51084.
+
+          This is a separate personal distribution. Install opencode-a11y alongside official opencode; do not rename the binary to opencode. App data/config directories and the official updater are isolated. Upgrade this build by installing a newer asset from this fork's Releases, not by running the official upgrade command.
+
+          Source tag contains the exact official V2 source plus the PR patch and personal identity changes. BUILD_INFO.txt records the commits, and SHA256SUMS lists archive checksums. The Linux x64 baseline executable was run from the workflow's PATH and checked before publication. Other architectures are cross-compiled and statically verified, not runtime-tested on their target operating systems.
+          EOF
+          gh release create "$RELEASE_TAG" "$GITHUB_WORKSPACE"/release-assets/* \
+            --repo aimansour/opencode \
+            --verify-tag \
+            --title "OpenCode A11y $TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
