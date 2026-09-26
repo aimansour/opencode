@@ -1,0 +1,322 @@
+name: Personal V2 A11y macOS and Linux Desktop
+
+on:
+  schedule:
+    - cron: "49 * * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional official V2 tag; empty picks the oldest unshipped Desktop release."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: personal-v2-a11y-unix
+  cancel-in-progress: false
+
+jobs:
+  select:
+    if: github.repository == 'aimansour/opencode' && vars.PERSONAL_A11Y_STOP != 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.pick.outputs.build }}
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.upstream_tag || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -z "$REQUESTED" || "$REQUESTED" =~ ^v2\.[0-9]+\.[0-9]+$ ]] || exit 1
+          pr="$(gh api repos/anomalyco/opencode/pulls/51084)"
+          [[ "$(jq -r .merged <<< "$pr")" == false ]] || exit 0
+          issues="$(gh issue list -R aimansour/opencode --state open --limit 1000 --json title --jq '.[].title')"
+          if grep -Eq '\[a11y-release-(blocked|stop)\]' <<< "$issues"; then exit 0; fi
+          tags="$(git ls-remote --refs --tags https://github.com/anomalyco/opencode.git 'refs/tags/v2.*' |
+            awk '{sub("refs/tags/", "", $2); print $2}' |
+            grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V)"
+          eligible=0
+          while IFS= read -r tag; do
+            [[ "$tag" == v2.0.18 ]] && eligible=1
+            [[ "$eligible" == 1 ]] || continue
+            [[ -z "$REQUESTED" || "$tag" == "$REQUESTED" ]] || continue
+            if ! cli="$(gh api "repos/aimansour/opencode/releases/tags/a11y-$tag" 2>/dev/null)"; then break; fi
+            if [[ "$(jq -r .draft <<< "$cli")" == true ||
+                  "$(jq '[.assets[] | select(.size > 0 and .state == "uploaded" and (.digest | startswith("sha256:")))] | length' <<< "$cli")" -ne 14 ]]; then
+              echo "Incomplete CLI release $tag; cannot build a Desktop from it." >&2
+              exit 1
+            fi
+            release_tag="a11y-desktop-unix-$tag"
+            existing="$(gh api 'repos/aimansour/opencode/releases?per_page=100' |
+              jq -c --arg tag "$release_tag" '[.[] | select(.tag_name == $tag)] | if length == 0 then empty elif length == 1 then .[0] else error("duplicate tag") end')"
+            if [[ -z "$existing" ]]; then existing="$(gh api "repos/aimansour/opencode/releases/tags/$release_tag" 2>/dev/null || true)"; fi
+            if [[ -n "$existing" ]]; then
+              if [[ "$(jq -r .draft <<< "$existing")" == true ||
+                    "$(jq '[.assets[] | select(.size > 0 and .state == "uploaded" and (.digest | startswith("sha256:")))] | length' <<< "$existing")" -ne 12 ]]; then
+                gh issue create -R aimansour/opencode --title "[a11y-release-blocked] incomplete $release_tag" \
+                  --body "Inspect the partial Unix Desktop release, then resolve and close this issue."
+                exit 1
+              fi
+              continue
+            fi
+            { echo 'build=true'; echo "tag=$tag"; } >> "$GITHUB_OUTPUT"
+            echo "Selected Unix Desktop $tag"; break
+          done <<< "$tags"
+
+  build:
+    needs: select
+    if: needs.select.outputs.build == 'true' && vars.PERSONAL_A11Y_STOP != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-26-intel, flavor: mac-x64, target: x86_64-apple-darwin, cli: darwin-x64-baseline, flags: "--mac --x64", total: 2 }
+          - { runner: macos-26, flavor: mac-arm64, target: aarch64-apple-darwin, cli: darwin-arm64, flags: "--mac --arm64", total: 2 }
+          - { runner: ubuntu-24.04, flavor: linux-x64, target: x86_64-unknown-linux-gnu, cli: linux-x64-baseline, flags: "--linux --x64", total: 3 }
+          - { runner: ubuntu-24.04-arm, flavor: linux-arm64, target: aarch64-unknown-linux-gnu, cli: linux-arm64, flags: "--linux --arm64", total: 3 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.select.outputs.tag }}
+      OPENCODE_CHANNEL: a11y
+      OPENCODE_CLI_TARGET: ${{ matrix.target }}
+      NODE_OPTIONS: --max-old-space-size=4096
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+          sparse-checkout: .github/scripts/personal-v2
+      - uses: actions/checkout@v4
+        with:
+          repository: aimansour/opencode
+          ref: a11y-${{ needs.select.outputs.tag }}
+          path: source
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm
+      - name: Download the exact published personal CLI and verify its SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="opencode-a11y-${TAG#v}-${{ matrix.cli }}.tar.gz"
+          mkdir -p cli-download "source/packages/cli/dist/cli-${{ matrix.cli }}"
+          gh release download "a11y-$TAG" -R aimansour/opencode --pattern "$name" --pattern SHA256SUMS --dir cli-download
+          expected="$(awk -v n="$name" '$2 == n {print $1}' cli-download/SHA256SUMS)"
+          [[ -n "$expected" ]] || { echo "CLI checksum missing" >&2; exit 1; }
+          actual="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "cli-download/$name")"
+          [[ "$expected" == "$actual" ]] || { echo "Personal CLI checksum mismatch" >&2; exit 1; }
+          tar -xzf "cli-download/$name" -C "source/packages/cli/dist/cli-${{ matrix.cli }}"
+          package="source/packages/cli/dist/cli-${{ matrix.cli }}"
+          python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["name"] == sys.argv[2] and m["version"] == sys.argv[3]' \
+            "$package/package.json" "@aimansour/cli-${{ matrix.cli }}" "${TAG#v}"
+          test -s "$package/bin/opencode-a11y"
+          chmod +x "$package/bin/opencode-a11y"
+          "$package/bin/opencode-a11y" --version | grep -F "${TAG#v}"
+      - name: Apply only independent Desktop and unsigned-macOS branding
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/.github/scripts/personal-v2/desktop_brand.py "$GITHUB_WORKSPACE/source"
+          python3 automation/.github/scripts/personal-v2/unix_brand.py "$GITHUB_WORKSPACE/source"
+          git -C source diff --check
+          git -C source add -u
+          git -C source diff --cached --check
+          mkdir -p desktop-assets
+          git -C source write-tree > "desktop-assets/SOURCE_TREE_${{ matrix.flavor }}.txt"
+      - name: Install frozen dependencies and test the Desktop code
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run --cwd packages/desktop typecheck
+          bun run --cwd packages/desktop test
+      - name: Build and package Desktop with the tested personal CLI
+        working-directory: source
+        shell: bash
+        env:
+          OPENCODE_CLI_DIST: ${{ github.workspace }}/source/packages/cli/dist
+        run: |
+          set -euo pipefail
+          bun run --cwd packages/desktop prebuild
+          original="packages/cli/dist/cli-${{ matrix.cli }}/bin/opencode-a11y"
+          embedded="packages/desktop/resources/opencode-cli"
+          cmp "$original" "$embedded"
+          bun run --cwd packages/desktop build
+          (cd packages/desktop && bunx electron-builder ${{ matrix.flags }} --publish never --config electron-builder.config.ts)
+          packaged="$(find packages/desktop/dist -type f -name opencode-cli -print -quit)"
+          [[ -n "$packaged" ]] || { echo "Missing packaged personal CLI" >&2; exit 1; }
+          cmp "$original" "$packaged"
+          test -s "$packaged"
+      - name: Verify named installer artifacts and upload only complete packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="source/packages/desktop/dist"
+          if [[ "$RUNNER_OS" == macOS ]]; then extensions=(dmg zip); else extensions=(AppImage deb rpm); fi
+          for ext in "${extensions[@]}"; do
+            # macOS ships Bash 3.2, which has no mapfile/readarray.
+            files=()
+            while IFS= read -r file; do files+=("$file"); done < <(find "$root" -maxdepth 1 -type f -name "opencode-a11y-desktop-*-${{ matrix.flavor }}.$ext")
+            [[ "${#files[@]}" == 1 ]] || { echo "Expected one personal $ext package; found ${#files[@]}" >&2; exit 1; }
+            test -s "${files[0]}"
+            cp "${files[0]}" desktop-assets/
+          done
+          actual="$(find desktop-assets -maxdepth 1 -type f ! -name 'SOURCE_TREE_*' | wc -l | tr -d ' ')"
+          [[ "$actual" == "${{ matrix.total }}" ]]
+          [[ "$(wc -l < "desktop-assets/SOURCE_TREE_${{ matrix.flavor }}.txt" | tr -d ' ')" -eq 1 ]]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: personal-desktop-${{ matrix.flavor }}
+          path: desktop-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [select, build]
+    if: needs.select.outputs.build == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.select.outputs.tag }}
+      RELEASE_TAG: a11y-desktop-unix-${{ needs.select.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+          sparse-checkout: .github/scripts/personal-v2
+      - uses: actions/checkout@v4
+        with:
+          repository: aimansour/opencode
+          ref: a11y-${{ needs.select.outputs.tag }}
+          path: source
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: personal-desktop-*
+          merge-multiple: true
+          path: desktop-assets
+      - name: Reproduce the exact source tree used by every platform build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 automation/.github/scripts/personal-v2/desktop_brand.py "$GITHUB_WORKSPACE/source"
+          python3 automation/.github/scripts/personal-v2/unix_brand.py "$GITHUB_WORKSPACE/source"
+          git -C source add -u
+          git -C source diff --cached --check
+          tree="$(git -C source write-tree)"
+          mapfile -t records < <(find desktop-assets -maxdepth 1 -name 'SOURCE_TREE_*' -type f | sort)
+          [[ "${#records[@]}" -eq 4 ]] || { echo "Missing platform source attestations" >&2; exit 1; }
+          for record in "${records[@]}"; do
+            [[ "$(cat "$record")" == "$tree" ]] || { echo "Desktop source trees differ across platforms" >&2; exit 1; }
+            rm "$record"
+          done
+          git -C source config user.name 'github-actions[bot]'
+          git -C source config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C source commit -m "build(a11y): independently branded Unix Desktop for $TAG"
+          echo "All four platform builders used source tree $tree"
+      - name: Audit all ten native installers and create release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for flavor in mac-x64 mac-arm64 linux-x64 linux-arm64; do
+            if [[ "$flavor" == mac-* ]]; then extensions=(dmg zip); else extensions=(AppImage deb rpm); fi
+            for ext in "${extensions[@]}"; do
+              mapfile -t files < <(find desktop-assets -maxdepth 1 -type f -name "opencode-a11y-desktop-*-$flavor.$ext")
+              [[ "${#files[@]}" -eq 1 && -s "${files[0]}" ]] || { echo "Missing $flavor $ext asset" >&2; exit 1; }
+            done
+          done
+          [[ "$(find desktop-assets -maxdepth 1 -type f | wc -l)" -eq 10 ]] || exit 1
+          {
+            echo "Official release: $TAG"
+            echo "Verified personal CLI source tag: a11y-$TAG"
+            echo "Unix Desktop source commit: $(git -C source rev-parse HEAD)"
+            echo "Source tree: $(git -C source rev-parse 'HEAD^{tree}')"
+            echo "Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "All four platform builds checked the SHA256 of the original personal CLI archives."
+          } > desktop-assets/BUILD_INFO.txt
+          (cd desktop-assets && sha256sum opencode-a11y-desktop-* > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - name: Recheck PR and push immutable Unix source tag
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(gh api repos/anomalyco/opencode/pulls/51084 --jq .merged)" == false ]] || exit 1
+          ref="refs/tags/$RELEASE_TAG"
+          existing="$(git ls-remote https://github.com/aimansour/opencode.git "$ref" | awk '{print $1}')"
+          if [[ -n "$existing" ]]; then
+            git fetch --no-tags --depth=1 https://github.com/aimansour/opencode.git "$ref"
+            [[ "$(git rev-parse 'FETCH_HEAD^{tree}')" == "$(git rev-parse 'HEAD^{tree}')" ]] || exit 1
+          else
+            gh auth setup-git
+            git push https://github.com/aimansour/opencode.git "HEAD:$ref"
+          fi
+      - name: Publish only after verifying the complete draft and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(gh api repos/anomalyco/opencode/pulls/51084 --jq .merged)" == false ]] || exit 1
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          OpenCode A11y $TAG macOS (Intel and Apple Silicon) and Linux (x64 and ARM64) Desktop.
+          All ten installers contain the hash-verified CLI built by the separate personal CLI workflow.
+          macOS builds are unsigned and unnotarized, and may require manual Gatekeeper approval.
+          Official CLI/Desktop automatic updaters are disabled; install subsequent personal releases manually.
+          EOF
+          gh release create "$RELEASE_TAG" desktop-assets/* --draft --latest=false \
+            -R aimansour/opencode --verify-tag --title "OpenCode A11y Unix Desktop $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          draft="$(gh api 'repos/aimansour/opencode/releases?per_page=100' |
+            jq -c --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag)] | if length == 1 then .[0] else error("draft not uniquely found") end')"
+          [[ "$(jq -r .draft <<< "$draft")" == true && "$(jq '.assets | length' <<< "$draft")" -eq 12 ]] || exit 1
+          for file in desktop-assets/*; do
+            name="${file##*/}"
+            digest="sha256:$(sha256sum "$file" | awk '{print $1}')"
+            bytes="$(stat -c %s "$file")"
+            jq -e --arg name "$name" --arg digest "$digest" --argjson bytes "$bytes" \
+              'any(.assets[]; .name == $name and .digest == $digest and .size == $bytes and .state == "uploaded")' \
+              <<< "$draft" >/dev/null || exit 1
+          done
+          [[ "$(gh api repos/anomalyco/opencode/pulls/51084 --jq .merged)" == false ]] || exit 1
+          gh release edit "$RELEASE_TAG" -R aimansour/opencode --draft=false --latest=false
+          published="$(gh api "repos/aimansour/opencode/releases/tags/$RELEASE_TAG")"
+          [[ "$(jq -r .draft <<< "$published")" == false && "$(jq '.assets | length' <<< "$published")" -eq 12 ]]
+
+  block-on-failure:
+    needs: [select, build, publish]
+    if: >-
+      always() && github.repository == 'aimansour/opencode' &&
+      (needs.select.result == 'failure' || needs.build.result == 'failure' || needs.publish.result == 'failure')
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.select.outputs.tag || 'selection' }}
+    steps:
+      - name: Stop all future personal releases until manually resolved
+        shell: bash
+        run: |
+          set -euo pipefail
+          issues="$(gh issue list -R aimansour/opencode --state open --limit 1000 --json title --jq '.[].title')"
+          if grep -Fq '[a11y-release-blocked]' <<< "$issues"; then exit 0; fi
+          gh issue create -R aimansour/opencode \
+            --title "[a11y-release-blocked] Unix Desktop $TAG" \
+            --body "A macOS/Linux build, personal CLI verification, exact source-tree check, or release publication failed. Resolve $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID and inspect drafts before closing this issue."

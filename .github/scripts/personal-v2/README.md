@@ -8,11 +8,11 @@ anomalyco/opencode#51084 to each tag without updating the PR branch.
 ## Lifecycle
 
 GitHub Actions runs Personal V2 A11y CLI at minute 23 UTC and Personal
-V2 A11y Windows Desktop at minute 41 UTC every hour. Both take official
-V2 tags oldest-first, starting at v2.0.18. The Desktop workflow waits
-for the corresponding successfully published personal CLI release and
-bundles its hash-verified Windows x64 executable. You can also run both
-workflows manually from Actions with an optional official V2 tag.
+V2 A11y Windows Desktop at minute 41 UTC and Personal V2 A11y macOS and
+Linux Desktop at minute 49 UTC every hour. All workflows take official
+V2 tags oldest-first, starting at v2.0.18. Desktop builders wait for the
+matching verified personal CLI release and embed its exact executable.
+Each workflow also supports manual Actions dispatch with an official V2 tag.
 
 Closing the PR without merging it, including automatic inactivity closure,
 does NOT stop personal releases. Both workflows stop after the PR is
@@ -53,6 +53,18 @@ official opencode:// protocol. Desktop updates are published automatically
 but must be installed manually from the next personal Desktop Release.
 Only Windows x64 Desktop is built and packaged by this workflow.
 
+## macOS and Linux Desktop
+
+The separate a11y-desktop-unix-v2.x.y release contains unsigned macOS
+Intel/Apple Silicon DMG and ZIP packages and Linux x64/ARM64 AppImage,
+DEB and RPM packages. Four native builders download and verify the
+matching personal CLI archive and compare executable bytes after prebuild
+and packaging. All installers and their source trees must pass checks
+before a draft can be published. Personal app identity and user data are
+isolated; the upstream desktop updater is disabled. macOS builds are not
+Apple-notarized and may require manual Gatekeeper approval. Install newer
+personal releases manually; packages are automatically built and published.
+
 ## Install and update
 
 Download the archive for your platform from this fork's Releases page.
@@ -72,7 +84,7 @@ already-installed desktop/CLI binary is not configured**; this workflow
 automatically produces and publishes the new release, not an unattended
 update of each user's computer.
 
-If fork Actions are disabled, enable them on the fork. To stop both
+If fork Actions are disabled, enable them on the fork. To stop all
 pipelines, set PERSONAL_A11Y_STOP=true under Settings > Secrets and
 variables > Actions > Variables, or disable both workflows. Do not edit
 the PR branch to manage releases.
