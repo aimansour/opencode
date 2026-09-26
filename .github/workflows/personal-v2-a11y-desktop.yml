@@ -79,8 +79,15 @@ jobs:
           fi
           issues="$(gh issue list -R aimansour/opencode --state open --limit 1000 --json title --jq '.[].title')"
           if grep -Eq '\[a11y-release-(blocked|stop)\]' <<< "$issues" && [[ "$VERIFY_ONLY" != true ]]; then
-            echo "Personal release stopped by an open issue (verification-only is still allowed)."
-            exit 0
+            blockers="$(gh issue list -R aimansour/opencode --state open --limit 1000 --json number,title --jq '.[] | select(.title | startswith("[a11y-release-")) | .number')"
+            if [[ "$EVENT_NAME" == workflow_dispatch && "$REQUESTED_TAG" == v2.0.18 &&
+                  "$HOTFIX_SUFFIX" == r1 && "$blockers" == 7 &&
+                  "$issues" == *'[a11y-release-blocked] Windows Desktop v2.0.18 hangs during install and opens blank window'* ]]; then
+              echo 'Allowing only the explicit Windows v2.0.18-r1 repair while issue #7 holds all other personal releases.'
+            else
+              echo "Personal release stopped by an open issue (verification-only is still allowed)."
+              exit 0
+            fi
           fi
           tags="$(git ls-remote --refs --tags https://github.com/anomalyco/opencode.git 'refs/tags/v2.*' |
             awk '{sub("refs/tags/", "", $2); print $2}' |

@@ -58,6 +58,21 @@ try {
   $summary.cliSha256 = $actual
   $summary.cliVersion = (Get-Content $versionFile -Raw).Trim()
   if ($summary.cliVersion -notmatch '^2\.[0-9]+\.[0-9]+$') { throw 'Installed CLI version marker is invalid.' }
+  # The user opens the Start Menu / Desktop shortcut, not the exe path typed by CI.
+  $linkRoots = @(
+    (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'),
+    (Join-Path $env:USERPROFILE 'Desktop')
+  )
+  $links = @($linkRoots | Where-Object { Test-Path $_ } | ForEach-Object {
+    Get-ChildItem -Path $_ -Recurse -File -Filter '*.lnk' -ErrorAction SilentlyContinue
+  })
+  $shell = New-Object -ComObject WScript.Shell
+  $validLinks = @($links | Where-Object {
+    $target = $shell.CreateShortcut($_.FullName).TargetPath
+    $target -and [IO.Path]::GetFullPath($target).Equals([IO.Path]::GetFullPath($desktop), [StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($validLinks.Count -lt 1) { throw 'No Start Menu or Desktop shortcut launches the installed personal executable.' }
+  $summary.launchShortcut = $validLinks[0].FullName
   $summary.installed = $true
   # An NSIS one-click installer may auto-launch the app; ensure the test owns the first instance.
   @(Get-Process -Name 'opencode-a11y-desktop' -ErrorAction SilentlyContinue) | Stop-Process -Force -ErrorAction SilentlyContinue

@@ -75,7 +75,12 @@ verification, a broken published installer can be replaced without mutating
 its old release by dispatching an explicit official upstream_tag with
 hotfix_suffix=r1 (or the next unused rN); this creates a separate immutable
 source tag and GitHub Release only after the install-and-launch gate passes.
-A blocking issue must be resolved and closed before hotfix publication.
+An explicit one-time exception permits only the verified Windows
+v2.0.18-r1 repair to publish while blocker issue #7 is open; scheduled
+CLI/Windows/Unix releases and any other manual release remain blocked.
+After the hotfix is published and checked, close issue #7. The installer
+smoke also verifies the Start Menu or Desktop shortcut points to the
+installed personal executable, not the original OpenCode or the old binary.
 
 ## macOS and Linux Desktop
 
