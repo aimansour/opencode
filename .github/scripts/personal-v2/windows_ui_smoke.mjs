@@ -17,8 +17,10 @@ for (const dir of [output, data, local, join(home, "config"), join(home, "data")
 // Never forward GitHub Actions tokens or unrelated runner secrets into the desktop or its logs.
 const safeEnv = /^(PATH|PATHEXT|SystemRoot|WINDIR|COMSPEC|TEMP|TMP|USERDOMAIN|USERNAME|USERPROFILE|APPDATA|LOCALAPPDATA|HOMEDRIVE|HOMEPATH|PROCESSOR_ARCHITECTURE|PROCESSOR_IDENTIFIER|NUMBER_OF_PROCESSORS|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|PROGRAMDATA|ALLUSERSPROFILE|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|COMMONPROGRAMW6432|LANG|LC_ALL)$/i
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => safeEnv.test(key)))
+// Keep the actual Windows account home: Electron resolves it through Windows APIs while
+// Bun/Node can honor USERPROFILE. Spoofing it produced a false service-path mismatch.
 Object.assign(env, {
-  USERPROFILE: home, HOME: home, APPDATA: data, LOCALAPPDATA: local,
+  APPDATA: data, LOCALAPPDATA: local,
   XDG_DATA_HOME: join(home, "data"), XDG_CONFIG_HOME: join(home, "config"),
   XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"),
   OPENCODE_CONFIG_DIR: join(home, "config"), OPENCODE_DB: join(home, "data", "opencode-a11y.db"),
@@ -78,7 +80,7 @@ const probe = `(() => {
   const shell = document.querySelector('#root [data-titlebar-tab-link], #root [data-action="vertical-tabs-home"]');
   const home = document.querySelector('#root [data-action="home-new-session"], #root [data-action="home-add-project-row"]');
   const editor = document.querySelector('#root [data-component="composer-editor"][contenteditable="true"]');
-  const visible = [shell, home, editor].some((el) => el && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0);
+  const visible = [home, editor].some((el) => el && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0);
   return {
     url: location.href, state: document.readyState, title: document.title,
     rootChildren: root?.children.length ?? 0, shell: !!shell, home: !!home, editor: !!editor,
@@ -121,7 +123,7 @@ try {
       if (report.observations.length === 0 || Date.now() - report.observations.at(-1).at > 5000)
         report.observations.push({ at: Date.now(), ...last })
       if (last.bodyText?.includes("An error occurred while starting the local server.") && last.errorDetails) break
-      if ((last.shell || last.home || last.editor) && last.visible && !last.overlayBlocking) {
+      if ((last.home || last.editor) && last.visible && !last.overlayBlocking) {
         await sleep(3000)
         const confirm = await cdp.send("Runtime.evaluate", { expression: probe, returnByValue: true })
         if (confirm.result?.value?.visible && !confirm.result.value.overlayBlocking) {
