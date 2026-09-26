@@ -15,7 +15,7 @@ matching verified personal CLI release and embed its exact executable.
 Each workflow also supports manual Actions dispatch with an official V2 tag.
 
 Closing the PR without merging it, including automatic inactivity closure,
-does NOT stop personal releases. Both workflows stop after the PR is
+does NOT stop personal releases. All workflows stop after the PR is
 actually merged, or when you explicitly set the fork's Actions repository
 variable PERSONAL_A11Y_STOP to true. You can also disable both workflows
 under Actions, or open an issue beginning [a11y-release-stop]. The original
@@ -23,7 +23,7 @@ PR branch is never edited by the release automation.
 
 If cherry-picking, version-dependent branding, tests, artifact verification,
 or publishing breaks, the workflow creates an issue starting with
-[a11y-release-blocked]. **Both scheduled workflows skip releases**
+[a11y-release-blocked]. **All scheduled workflows skip releases**
 until you resolve the problem and close the blocking issue. The Chromium
 accessibility regression, CLI build, per-target executable checks, and
 workflow-built CLI smoke test must succeed before publishing. The Windows
