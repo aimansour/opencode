@@ -14,6 +14,10 @@ on:
         required: false
         type: boolean
         default: false
+      hotfix_suffix:
+        description: "Optional manual hotfix suffix such as r1; publish a separate immutable Desktop release for upstream_tag."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -44,6 +48,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_TAG: ${{ inputs.upstream_tag || '' }}
           VERIFY_ONLY: ${{ inputs.verify_only || 'false' }}
+          HOTFIX_SUFFIX: ${{ inputs.hotfix_suffix || '' }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           if [[ -n "$REQUESTED_TAG" && ! "$REQUESTED_TAG" =~ ^v2\.[0-9]+\.[0-9]+$ ]]; then
@@ -52,6 +58,12 @@ jobs:
           fi
           if [[ "$VERIFY_ONLY" == true && -z "$REQUESTED_TAG" ]]; then
             echo 'Verification-only runs must specify an already-published V2 tag.' >&2
+            exit 1
+          fi
+          if [[ -n "$HOTFIX_SUFFIX" ]] && { [[ "$EVENT_NAME" != workflow_dispatch ]] ||
+                [[ -z "$REQUESTED_TAG" ]] || [[ "$VERIFY_ONLY" == true ]] ||
+                [[ ! "$HOTFIX_SUFFIX" =~ ^r[1-9][0-9]*$ ]]; }; then
+            echo 'Manual hotfix requires explicit upstream_tag, a suffix such as r1, and verify_only=false.' >&2
             exit 1
           fi
           pr="$(gh api repos/anomalyco/opencode/pulls/51084)"
@@ -89,7 +101,7 @@ jobs:
               fi
               exit 1
             fi
-            desktop_tag="a11y-desktop-$tag"
+            desktop_tag="a11y-desktop-$tag${HOTFIX_SUFFIX:+-$HOTFIX_SUFFIX}"
             if desktop="$(gh release view "$desktop_tag" -R aimansour/opencode --json isDraft,assets 2>/dev/null)"; then
               if ! python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/verify_release.py" windows "$tag" <<< "$desktop"; then
                 gh issue create -R aimansour/opencode --title "[a11y-release-blocked] incomplete $desktop_tag" \
@@ -259,6 +271,7 @@ jobs:
           Copy-Item $installers[0].FullName (Join-Path $out $installers[0].Name)
           @(
             "Official source: $env:TAG"
+            "Personal Windows release: $env:RELEASE_TAG"
             "Original accessibility PR: https://github.com/anomalyco/opencode/pull/51084"
             "PR commit from verified CLI release: $env:SOURCE_PR_SHA"
             "Verified personal CLI source: $env:PERSONAL_SOURCE_SHA"
@@ -325,13 +338,22 @@ jobs:
           $notes = Join-Path $env:RUNNER_TEMP 'desktop-release-notes.md'
           @(
             "Personal OpenCode V2 $env:TAG Windows x64 Desktop with accessibility fix #51084."
+            "Release tag: $env:RELEASE_TAG"
+            "Install location: %LOCALAPPDATA%\Programs\OpenCode-A11y (separate from official OpenCode)."
+            "This installer passed a real NSIS install, bundled CLI hash, and usable GUI startup test on Windows."
             ""
             "Install separately from official OpenCode: name OpenCode A11y, app ID ai.aimansour.opencode.a11y, separate user data."
             "The bundled opencode-a11y.exe was built by the personal CLI workflow for the same official V2 tag and its hash was checked before and after packaging."
             "Official CLI and Desktop updaters are disabled. Install future personal Desktop releases manually from this fork."
             "This is an unsigned personal Windows installer; Windows SmartScreen may display a warning."
           ) | Set-Content $notes
-          gh release create $env:RELEASE_TAG @($files | ForEach-Object { $_.FullName }) -R aimansour/opencode --verify-tag --draft --title "OpenCode A11y Windows Desktop $env:TAG" --notes-file $notes
+          $title = "OpenCode A11y Windows Desktop $env:TAG"
+          if ($env:RELEASE_TAG -ne "a11y-desktop-$env:TAG") {
+            $title = "$title (verified hotfix $env:RELEASE_TAG)"
+            $original = Get-Content $notes -Raw
+            "Verified hotfix for Windows startup issue #7. The original Windows installer is retained as a flagged prerelease and must not be used.`n`n$original" | Set-Content $notes
+          }
+          gh release create $env:RELEASE_TAG @($files | ForEach-Object { $_.FullName }) -R aimansour/opencode --verify-tag --draft --title $title --notes-file $notes
           # REST releases/tags returns 404 for drafts; gh release view includes drafts.
           $release = gh release view $env:RELEASE_TAG -R aimansour/opencode --json isDraft,assets | ConvertFrom-Json
           if (!$release.isDraft -or $release.assets.Count -ne 3) { throw 'Draft or asset count verification failed.' }

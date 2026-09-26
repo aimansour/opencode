@@ -70,7 +70,12 @@ future workflow change without modifying a published release, manually
 dispatch it with upstream_tag set to an already-published V2 tag and
 verify_only=true. This rebuilds, tests, packages and checks the installer,
 but does not push source tags or publish assets. A failed verification still
-blocks subsequent releases until manually resolved.
+blocks subsequent releases until manually resolved. After a successful
+verification, a broken published installer can be replaced without mutating
+its old release by dispatching an explicit official upstream_tag with
+hotfix_suffix=r1 (or the next unused rN); this creates a separate immutable
+source tag and GitHub Release only after the install-and-launch gate passes.
+A blocking issue must be resolved and closed before hotfix publication.
 
 ## macOS and Linux Desktop
 
