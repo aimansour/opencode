@@ -5,6 +5,7 @@ import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { promisify } from "node:util"
+import { collectRuntimeDiagnostics } from "./windows_runtime_diagnostics.mjs"
 
 const [binary, reportDir] = process.argv.slice(2)
 if (!binary || !reportDir || process.platform !== "win32") throw new Error("usage (Windows): node windows_ui_smoke.mjs <installed-exe> <report-dir>")
@@ -145,6 +146,7 @@ try {
   process.exitCode = 1
 } finally {
   report.finished = new Date().toISOString()
+  report.diagnostics = collectRuntimeDiagnostics({ home, data, local, runnerHome: process.env.USERPROFILE })
   writeFileSync(join(output, "smoke-result.json"), JSON.stringify(report, null, 2))
   cdp?.close()
   if (child?.pid) {
