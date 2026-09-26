@@ -74,8 +74,8 @@ jobs:
               exit 1
             fi
             desktop_tag="a11y-desktop-$tag"
-            if desktop="$(gh api "repos/aimansour/opencode/releases/tags/$desktop_tag" 2>/dev/null)"; then
-              if [[ "$(jq -r '.draft' <<< "$desktop")" == true || "$(jq '.assets | length' <<< "$desktop")" -ne 3 ]]; then
+            if desktop="$(gh release view "$desktop_tag" -R aimansour/opencode --json isDraft,assets 2>/dev/null)"; then
+              if [[ "$(jq -r '.isDraft' <<< "$desktop")" == true || "$(jq '.assets | length' <<< "$desktop")" -ne 3 ]]; then
                 gh issue create -R aimansour/opencode --title "[a11y-release-blocked] incomplete $desktop_tag" \
                   --body "The Windows desktop release is an incomplete draft or missing assets. Inspect https://github.com/aimansour/opencode/releases/tag/$desktop_tag and repair it manually before closing this issue."
                 exit 1
@@ -294,8 +294,9 @@ jobs:
             "This is an unsigned personal Windows installer; Windows SmartScreen may display a warning."
           ) | Set-Content $notes
           gh release create $env:RELEASE_TAG @($files | ForEach-Object { $_.FullName }) -R aimansour/opencode --verify-tag --draft --title "OpenCode A11y Windows Desktop $env:TAG" --notes-file $notes
-          $release = gh api "repos/aimansour/opencode/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
-          if (!$release.draft -or $release.assets.Count -ne 3) { throw 'Draft or asset count verification failed.' }
+          # REST releases/tags returns 404 for drafts; gh release view includes drafts.
+          $release = gh release view $env:RELEASE_TAG -R aimansour/opencode --json isDraft,assets | ConvertFrom-Json
+          if (!$release.isDraft -or $release.assets.Count -ne 3) { throw 'Draft or asset count verification failed.' }
           foreach ($file in $files) {
             $matches = @($release.assets | Where-Object { $_.name -eq $file.Name -and $_.size -eq $file.Length -and $_.state -eq 'uploaded' })
             if ($matches.Count -ne 1) { throw "Missing uploaded asset: $($file.Name)" }

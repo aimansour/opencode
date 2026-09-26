@@ -315,8 +315,9 @@ jobs:
             --verify-tag \
             --title "OpenCode A11y $TAG" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
-          draft="$(gh api "repos/aimansour/opencode/releases/tags/$RELEASE_TAG")"
-          [[ "$(jq -r '.draft' <<< "$draft")" == true ]]
+          # GitHub REST releases/tags returns 404 for draft releases.
+          draft="$(gh release view "$RELEASE_TAG" --repo aimansour/opencode --json isDraft,assets)"
+          [[ "$(jq -r '.isDraft' <<< "$draft")" == true ]]
           [[ "$(jq '.assets | length' <<< "$draft")" -eq 14 ]] || {
             echo "Draft release has an unexpected asset count; manual repair required." >&2
             exit 1
