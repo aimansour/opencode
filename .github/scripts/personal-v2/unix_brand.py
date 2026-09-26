@@ -16,6 +16,16 @@ new = '''        publish: { provider: "github", owner: "aimansour", repo: "openc
 if source.count(old) != 1 or source.count(new) != 0:
     raise SystemExit("UNIX BRANDING INCOMPATIBLE: personal provider or signing structure changed; manual review required.")
 path.write_text(source.replace(old, new, 1), encoding="utf-8")
+# A distinct artifact filename does not prevent DEB/RPM replacing the official app.
+# Fail closed if the package manager's internal identities change upstream.
+builder_source = path.read_text(encoding="utf-8")
+old_deb = '''        deb: { fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opencode-a11y", fpm: [metainfoFpm(appId)] },'''
+personal_deb = '''        deb: { packageName: "opencode-a11y", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opencode-a11y", fpm: [metainfoFpm(appId)] },'''
+if builder_source.count(old_deb) != 1 or personal_deb in builder_source:
+    raise SystemExit("UNIX BRANDING INCOMPATIBLE: Linux package naming changed; manual review required.")
+path.write_text(builder_source.replace(old_deb, personal_deb, 1), encoding="utf-8")
 utils = Path(sys.argv[1]).resolve() / "packages/desktop/scripts/utils.ts"
 utils_source = utils.read_text(encoding="utf-8")
 mac_sign = 'if (process.platform === "darwin") await $`codesign --force --sign - ${dest}`'
@@ -41,6 +51,8 @@ personal = '''test("verifies personal macOS signing is disabled and official mac
     expect(config.mac?.identity).toBeNull()
     expect(config.mac?.notarize).toBe(false)
     expect(config.mac?.hardenedRuntime).toBe(false)
+    expect(config.deb?.packageName).toBe("opencode-a11y")
+    expect(config.rpm?.packageName).toBe("opencode-a11y")
   } else {
     expect(config.mac?.sign).toBeFunction()
   }

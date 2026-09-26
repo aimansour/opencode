@@ -92,6 +92,7 @@ jobs:
       OPENCODE_CLI_TARGET: ${{ matrix.target }}
       NODE_OPTIONS: --max-old-space-size=4096
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      PERSONAL_FLAVOR: ${{ matrix.flavor }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -170,6 +171,26 @@ jobs:
           [[ -n "$packaged" ]] || { echo "Missing packaged personal CLI" >&2; exit 1; }
           cmp "$original" "$packaged"
           test -s "$packaged"
+      - name: Verify actual Linux DEB and RPM package identities cannot replace official OpenCode
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="source/packages/desktop/dist"
+          case "$PERSONAL_FLAVOR" in
+            linux-x64) deb_arch=amd64; rpm_arch=x86_64 ;;
+            linux-arm64) deb_arch=arm64; rpm_arch=aarch64 ;;
+            *) echo "Unexpected personal Linux target" >&2; exit 1 ;;
+          esac
+          deb="$root/opencode-a11y-desktop-${TAG#v}-linux-$deb_arch.deb"
+          rpm_file="$root/opencode-a11y-desktop-${TAG#v}-linux-$rpm_arch.rpm"
+          [[ -s "$deb" && -s "$rpm_file" ]] || { echo "Personal Linux installers missing" >&2; exit 1; }
+          [[ "$(dpkg-deb --field "$deb" Package)" == opencode-a11y ]] || {
+            echo "DEB package identity collides with official OpenCode" >&2; exit 1;
+          }
+          [[ "$(rpm -qp --qf '%{NAME}' "$rpm_file")" == opencode-a11y ]] || {
+            echo "RPM package identity collides with official OpenCode" >&2; exit 1;
+          }
       - name: Verify named installer artifacts and upload only complete packages
         shell: bash
         run: |
@@ -181,7 +202,7 @@ jobs:
             # (x86_64/amd64/aarch64), not the matrix's x64/arm64 flavor.
             # Verify the exact raw output, then give the Release a stable name.
             if [[ "$RUNNER_OS" == Linux ]]; then
-              case "${{ matrix.flavor }}:$ext" in
+              case "$PERSONAL_FLAVOR:$ext" in
                 linux-x64:AppImage|linux-x64:rpm) raw_arch=x86_64 ;;
                 linux-x64:deb) raw_arch=amd64 ;;
                 linux-arm64:AppImage|linux-arm64:deb) raw_arch=arm64 ;;
