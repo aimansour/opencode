@@ -1,0 +1,73 @@
+name: Personal V2 A11y Windows Runtime Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Already-published personal Windows Desktop version to install and launch."
+        required: true
+        default: v2.0.18
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  install-and-launch:
+    if: github.repository == 'aimansour/opencode'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.upstream_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+          sparse-checkout: .github/scripts/personal-v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify and download the actual published Windows installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:TAG -notmatch '^v2\.[0-9]+\.[0-9]+$') { throw 'Invalid V2 tag.' }
+          $releaseTag = "a11y-desktop-$env:TAG"
+          $info = gh release view $releaseTag -R aimansour/opencode --json isDraft,assets
+          $info | python automation/.github/scripts/personal-v2/verify_release.py windows $env:TAG
+          if ($LASTEXITCODE -ne 0) { throw 'Published Windows Release is incomplete.' }
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          gh release download $releaseTag -R aimansour/opencode --pattern '*.exe' --pattern BUILD_INFO.txt --pattern SHA256SUMS --dir release
+          $version = $env:TAG.Substring(1)
+          $name = "opencode-a11y-desktop-$version-win-x64.exe"
+          $installer = Join-Path 'release' $name
+          if (!(Test-Path $installer)) { throw 'Installer filename does not match personal release.' }
+          $sum = @(Get-Content release/SHA256SUMS | Where-Object { $_ -match ("^[a-f0-9]{64}  " + [regex]::Escape($name) + "$") })
+          if ($sum.Count -ne 1) { throw 'Missing or duplicate installer SHA256SUMS entry.' }
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $sum[0].Substring(0, 64)) { throw 'Downloaded installer SHA256 mismatch.' }
+          $build = Get-Content release/BUILD_INFO.txt -Raw
+          $match = [regex]::Match($build, '(?m)^Embedded CLI SHA256: ([0-9a-f]{64})\r?$')
+          if (!$match.Success) { throw 'Missing embedded CLI provenance in release.' }
+          "SMOKE_INSTALLER=$((Resolve-Path $installer).Path)" >> $env:GITHUB_ENV
+          "SMOKE_CLI_HASH=$($match.Groups[1].Value)" >> $env:GITHUB_ENV
+      - name: Install the NSIS package and prove the GUI renders
+        shell: pwsh
+        run: |
+          ./automation/.github/scripts/personal-v2/windows_installer_smoke.ps1 -Installer $env:SMOKE_INSTALLER -ExpectedCliHash $env:SMOKE_CLI_HASH -ReportDir "$env:GITHUB_WORKSPACE/smoke-output"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-desktop-runtime-smoke
+          path: |
+            smoke-output/installer-result.json
+            smoke-output/smoke-result.json
+            smoke-output/desktop-window.png
+          if-no-files-found: ignore
+          retention-days: 7

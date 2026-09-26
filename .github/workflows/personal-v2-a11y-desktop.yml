@@ -66,8 +66,8 @@ jobs:
             exit 1
           fi
           issues="$(gh issue list -R aimansour/opencode --state open --limit 1000 --json title --jq '.[].title')"
-          if grep -Eq '\[a11y-release-(blocked|stop)\]' <<< "$issues"; then
-            echo "Personal release stopped by an open issue."
+          if grep -Eq '\[a11y-release-(blocked|stop)\]' <<< "$issues" && [[ "$VERIFY_ONLY" != true ]]; then
+            echo "Personal release stopped by an open issue (verification-only is still allowed)."
             exit 0
           fi
           tags="$(git ls-remote --refs --tags https://github.com/anomalyco/opencode.git 'refs/tags/v2.*' |
@@ -271,6 +271,23 @@ jobs:
           "$((Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($installer.Name)" |
             Set-Content (Join-Path $out 'SHA256SUMS')
           "INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
+
+      - name: Install the generated NSIS installer and verify an actually usable GUI
+        shell: pwsh
+        run: |
+          ./automation/.github/scripts/personal-v2/windows_installer_smoke.ps1 -Installer $env:INSTALLER -ExpectedCliHash $env:PERSONAL_CLI_SHA256 -ReportDir "$env:GITHUB_WORKSPACE/smoke-output"
+
+      - name: Retain runtime-smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-runtime-smoke-${{ github.run_id }}
+          path: |
+            smoke-output/installer-result.json
+            smoke-output/smoke-result.json
+            smoke-output/desktop-window.png
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Recheck PR and push immutable patched Desktop source tag
         if: ${{ !inputs.verify_only }}
