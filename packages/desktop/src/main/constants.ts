@@ -1,21 +1,23 @@
 import { app } from "electron"
 
-type Channel = "local" | "dev" | "beta" | "prod"
+type Channel = "local" | "dev" | "beta" | "prod" | "a11y"
 const raw = import.meta.env.OPENCODE_CHANNEL
-export const CHANNEL: Channel = raw === "local" || raw === "dev" || raw === "beta" || raw === "prod" ? raw : "dev"
+export const CHANNEL: Channel = raw === "local" || raw === "dev" || raw === "beta" || raw === "prod" || raw === "a11y" ? raw : "dev"
 export const VERSION = app.isPackaged ? app.getVersion() : (process.env.OPENCODE_VERSION ?? app.getVersion())
 
-export const UPDATER_ENABLED = app.isPackaged && CHANNEL !== "dev"
+export const UPDATER_ENABLED = app.isPackaged && CHANNEL !== "dev" && CHANNEL !== "a11y"
 
 const appNames: Record<string, string> = {
   dev: "OpenCode Dev",
   beta: "OpenCode Beta",
   prod: "OpenCode",
+  a11y: "OpenCode A11y",
 }
 const appIDs: Record<string, string> = {
   dev: "ai.opencode.desktop.dev",
   beta: "ai.opencode.desktop.beta",
   prod: "ai.opencode.desktop",
+  a11y: "ai.aimansour.opencode.a11y",
 }
 // Local renderer/server mode keeps the dev application identity.
 export const APP_NAME = app.isPackaged ? appNames[CHANNEL] : "OpenCode Dev"
