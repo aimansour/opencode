@@ -54,6 +54,9 @@ change(builder, '  switch (channel) {\n    case "dev": {', '''  switch (channel)
         appId,
         productName: "OpenCode A11y",
         artifactName: "opencode-a11y-desktop-${version}-${os}-${arch}.${ext}",
+        // electron-builder creates NSIS update metadata even with --publish never.
+        // Use only the personal fork as the provider; the in-app updater remains disabled.
+        publish: { provider: "github", owner: "aimansour", repo: "opencode", channel: "a11y" },
         protocols: [],
         win: { ...base.win, executableName: "opencode-a11y-desktop" },
         deb: { fpm: [metainfoFpm(appId)] },
