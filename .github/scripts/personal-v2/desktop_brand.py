@@ -84,4 +84,15 @@ change(probe, 'Service.discover({ version })', 'Service.discover({ version, file
 service = "packages/desktop/src/main/service/background-service.ts"
 change(service, 'import { sidecarProbe } from "./sidecar-probe"', 'import { personalServiceFile, sidecarProbe } from "./sidecar-probe"')
 change(service, '          : undefined,\n      version,', '          : personalServiceFile(),\n      version,')
+
+# NSIS otherwise inherits upstream's @opencode/desktop package-name install folder.
+# The personal installer must never share the official product's on-disk install path.
+installer = "packages/desktop/resources/windows/installer.nsh"
+change(installer, "!macro customInstall", '''!macro preInit
+  ; Unique per-user installation path for personal OpenCode A11y.
+  ; This registry key is scoped to the distinct personal appId / NSIS GUID.
+  WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "$LOCALAPPDATA\\Programs\\OpenCode-A11y"
+!macroend
+
+!macro customInstall''')
 print("Personal Windows Desktop identity, bundled CLI, and updater isolation applied.")

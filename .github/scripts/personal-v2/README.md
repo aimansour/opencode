@@ -46,8 +46,11 @@ on their target OS.
 
 The dedicated Windows Desktop release is tagged a11y-desktop-v2.x.y and
 contains a Windows x64 NSIS installer, BUILD_INFO.txt, and SHA256SUMS.
-Its product name is OpenCode A11y and its application identity and
-user-data directory are distinct from official OpenCode. The Windows builder
+Its product name is OpenCode A11y, and its application identity, installer
+location (`%LOCALAPPDATA%\\Programs\\OpenCode-A11y`), and user-data directory
+are distinct from official OpenCode. CI places a sentinel in the upstream
+package-name install directory and rejects a personal installer that touches
+that directory or installs outside the dedicated personal location. The Windows builder
 checks out the immutable source tag used by the tested personal CLI Release
 (not the mutable PR head) and verifies that source against the hash-checked
 CLI BUILD_INFO.txt before packaging. It bundles opencode-a11y.exe

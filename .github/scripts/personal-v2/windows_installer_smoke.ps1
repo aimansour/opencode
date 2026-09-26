@@ -10,16 +10,25 @@ $summary = @{ installer = (Resolve-Path $Installer).Path; installed = $false; ui
 try {
   if ($ExpectedCliHash -notmatch '^[a-f0-9]{64}$') { throw 'Invalid expected personal CLI hash.' }
   $programs = Join-Path $env:LOCALAPPDATA 'Programs'
+  $expectedDirectory = Join-Path $programs 'OpenCode-A11y'
+  $legacyDirectory = Join-Path $programs '@opencodedesktop'
+  $sentinel = Join-Path $legacyDirectory 'official-install-do-not-touch.txt'
+  New-Item -ItemType Directory -Path $legacyDirectory -Force | Out-Null
+  Set-Content -Path $sentinel -Value 'An official OpenCode installation must never be changed by personal NSIS.'
   $before = @(Get-ChildItem -Path $programs -Recurse -File -Filter 'opencode-a11y-desktop.exe' -ErrorAction SilentlyContinue)
   if ($before.Count -ne 0) { throw 'Runner has a pre-existing personal Desktop installation: refusing a contaminated test.' }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
   $install = Start-Process -FilePath (Resolve-Path $Installer).Path -ArgumentList '/S' -PassThru
   $summary.installerPid = $install.Id
   if (!$install.WaitForExit(480000)) {
     & taskkill.exe /T /F /PID $install.Id 2>$null
     throw 'Silent NSIS installation exceeded 8 minutes.'
   }
+  $clock.Stop()
   $install.Refresh()
+  $summary.installerElapsedMs = $clock.ElapsedMilliseconds
   $summary.installerExitCode = $install.ExitCode
+  if ($clock.ElapsedMilliseconds -gt 120000) { throw "NSIS installation took $($clock.ElapsedMilliseconds) ms: exceeds 2-minute runtime gate." }
   if ($install.ExitCode -ne 0) { throw "NSIS exited with code $($install.ExitCode)." }
   $deadline = (Get-Date).AddSeconds(90)
   do {
@@ -29,6 +38,11 @@ try {
   } while ((Get-Date) -lt $deadline)
   if ($found.Count -ne 1) { throw "Expected one installed personal Desktop exe; found $($found.Count)." }
   $desktop = $found[0].FullName
+  if ([IO.Path]::GetFullPath((Split-Path $desktop)) -ne [IO.Path]::GetFullPath($expectedDirectory)) {
+    throw "Personal Desktop installed into an unsafe/shared directory: $desktop"
+  }
+  if (!(Test-Path $sentinel)) { throw 'Personal installer modified the simulated official OpenCode directory.' }
+  $summary.isolatedInstallDirectory = $expectedDirectory
   $root = Split-Path $desktop
   $embedded = Join-Path $root 'resources/opencode-cli.exe'
   $versionFile = Join-Path $root 'resources/opencode-cli.version'
