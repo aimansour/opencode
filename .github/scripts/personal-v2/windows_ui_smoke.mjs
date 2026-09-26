@@ -13,7 +13,9 @@ const home = join(output, "profile")
 const data = join(home, "AppData", "Roaming")
 const local = join(home, "AppData", "Local")
 for (const dir of [output, data, local, join(home, "config"), join(home, "data"), join(home, "cache"), join(home, "state")]) mkdirSync(dir, { recursive: true })
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(OPENCODE_|OTEL_|SENTRY_)/i.test(key)))
+// Never forward GitHub Actions tokens or unrelated runner secrets into the desktop or its logs.
+const safeEnv = /^(PATH|PATHEXT|SystemRoot|WINDIR|COMSPEC|TEMP|TMP|USERDOMAIN|USERNAME|USERPROFILE|APPDATA|LOCALAPPDATA|HOMEDRIVE|HOMEPATH|PROCESSOR_ARCHITECTURE|PROCESSOR_IDENTIFIER|NUMBER_OF_PROCESSORS|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|PROGRAMDATA|ALLUSERSPROFILE|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|COMMONPROGRAMW6432|LANG|LC_ALL)$/i
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => safeEnv.test(key)))
 Object.assign(env, {
   USERPROFILE: home, HOME: home, APPDATA: data, LOCALAPPDATA: local,
   XDG_DATA_HOME: join(home, "data"), XDG_CONFIG_HOME: join(home, "config"),
