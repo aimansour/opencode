@@ -5,11 +5,11 @@ import { dirname, join } from "node:path"
 
 const CLI_VERSION = "dev"
 
-export type Channel = "dev" | "beta" | "prod"
+export type Channel = "dev" | "beta" | "prod" | "a11y"
 
 export function resolveChannel(): Channel {
   const raw = Bun.env.OPENCODE_CHANNEL
-  if (raw === "dev" || raw === "beta" || raw === "prod") return raw
+  if (raw === "dev" || raw === "beta" || raw === "prod" || raw === "a11y") return raw
   if (raw === "latest") return "prod"
   return "dev"
 }
@@ -94,9 +94,10 @@ export async function copyBuiltCliToResources(root: string, dest = windowsify("r
 // 200 MB binary on first launch.
 async function copyCliToResources(pkg: string, dest: string) {
   const cli = getCurrentCli()
-  await copyFile(join(pkg, "bin", cli.os === "win32" ? "opencode.exe" : "opencode"), dest)
+  await copyFile(join(pkg, "bin", Bun.env.OPENCODE_CHANNEL === "a11y" ? (cli.os === "win32" ? "opencode-a11y.exe" : "opencode-a11y") : (cli.os === "win32" ? "opencode.exe" : "opencode")), dest)
   await prepareCli(dest)
-  const manifest = (await Bun.file(join(pkg, "package.json")).json()) as { version?: string }
+  const manifest = (await Bun.file(join(pkg, "package.json")).json()) as { version?: string; name?: string }
+  if (Bun.env.OPENCODE_CHANNEL === "a11y" && manifest.name !== "@aimansour/" + cli.package.replace("@opencode/", "")) throw new Error("Personal desktop requires the tested personal CLI package")
   if (!manifest.version) throw new Error(`Bundled CLI package has no version: ${pkg}`)
   await Bun.write(versionFile(dest), manifest.version)
 }
@@ -107,10 +108,10 @@ export function versionFile(cli: string) {
 
 async function prepareCli(dest: string) {
   if (process.platform !== "win32") await chmod(dest, 0o755)
-  if (process.platform === "win32" && process.env.GITHUB_ACTIONS === "true") {
+  if (process.platform === "win32" && process.env.GITHUB_ACTIONS === "true" && Bun.env.OPENCODE_CHANNEL !== "a11y") {
     await $`pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File ../../script/sign-windows.ps1 ${dest}`
   }
-  if (process.platform === "darwin") await $`codesign --force --sign - ${dest}`
+  if (process.platform === "darwin" && Bun.env.OPENCODE_CHANNEL !== "a11y") await $`codesign --force --sign - ${dest}`
 }
 
 export function windowsify(path: string) {

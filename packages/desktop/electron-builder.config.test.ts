@@ -17,9 +17,18 @@ const channels = [
   { channel: "prod", appId: "ai.opencode.desktop" },
 ] as const
 
-test("signs the macOS app without signing the DMG", async () => {
+test("verifies personal macOS signing is disabled and official macOS signing remains enabled", async () => {
   const config = (await import("./electron-builder.config.ts?mac-signing")).default as Configuration
-  expect(config.mac?.sign).toBeFunction()
+  if (process.env.OPENCODE_CHANNEL === "a11y") {
+    expect(config.mac?.sign).toBeUndefined()
+    expect(config.mac?.identity).toBeNull()
+    expect(config.mac?.notarize).toBe(false)
+    expect(config.mac?.hardenedRuntime).toBe(false)
+    expect(config.deb?.packageName).toBe("opencode-a11y")
+    expect(config.rpm?.packageName).toBe("opencode-a11y")
+  } else {
+    expect(config.mac?.sign).toBeFunction()
+  }
   expect(config.dmg?.sign).not.toBe(true)
 })
 
