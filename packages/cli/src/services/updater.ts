@@ -142,6 +142,7 @@ const make = Effect.gen(function* () {
   }).pipe(Effect.orElseSucceed(() => undefined))
 
   const readPolicy = Effect.fnUntraced(function* () {
+    if (OPENCODE_CHANNEL === "a11y") return "disable" as const
     const values = yield* Effect.forEach(["config.json", "opencode.json", "opencode.jsonc"], (name) =>
       fs.readFileString(path.join(global.config, name)).pipe(
         Effect.map(decodePolicy),
@@ -472,6 +473,7 @@ const make = Effect.gen(function* () {
   })
 
   const check = Effect.fn("cli.updater.check")(function* () {
+    if (OPENCODE_CHANNEL === "a11y") return { type: "unavailable" as const, message: "Personal updates: https://github.com/aimansour/opencode/releases" }
     if (OPENCODE_LOCAL)
       return {
         type: "unavailable" as const,
