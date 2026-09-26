@@ -26,6 +26,11 @@ jobs:
       build: ${{ steps.pick.outputs.build }}
       tag: ${{ steps.pick.outputs.tag }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+          sparse-checkout: .github/scripts/personal-v2
       - id: pick
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,8 +52,7 @@ jobs:
             [[ "$eligible" == 1 ]] || continue
             [[ -z "$REQUESTED" || "$tag" == "$REQUESTED" ]] || continue
             if ! cli="$(gh api "repos/aimansour/opencode/releases/tags/a11y-$tag" 2>/dev/null)"; then break; fi
-            if [[ "$(jq -r .draft <<< "$cli")" == true ||
-                  "$(jq '[.assets[] | select(.size > 0 and .state == "uploaded" and (.digest | startswith("sha256:")))] | length' <<< "$cli")" -ne 14 ]]; then
+            if ! python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/verify_release.py" cli "$tag" <<< "$cli"; then
               echo "Incomplete CLI release $tag; cannot build a Desktop from it." >&2
               exit 1
             fi
@@ -60,8 +64,7 @@ jobs:
               if ! existing="$(gh api "repos/aimansour/opencode/releases/tags/$release_tag" 2>/dev/null)"; then existing=""; fi
             fi
             if [[ -n "$existing" ]]; then
-              if [[ "$(jq -r .draft <<< "$existing")" == true ||
-                    "$(jq '[.assets[] | select(.size > 0 and .state == "uploaded" and (.digest | startswith("sha256:")))] | length' <<< "$existing")" -ne 12 ]]; then
+              if ! python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/verify_release.py" unix "$tag" <<< "$existing"; then
                 gh issue create -R aimansour/opencode --title "[a11y-release-blocked] incomplete $release_tag" \
                   --body "Inspect the partial Unix Desktop release, then resolve and close this issue."
                 exit 1

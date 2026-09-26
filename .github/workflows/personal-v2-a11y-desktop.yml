@@ -32,6 +32,11 @@ jobs:
       tag: ${{ steps.pick.outputs.tag }}
       release_tag: ${{ steps.pick.outputs.release_tag }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+          sparse-checkout: .github/scripts/personal-v2
       - id: pick
         name: Select a tested personal CLI and unshipped official V2 tag
         shell: bash
@@ -77,23 +82,16 @@ jobs:
               echo "CLI for $tag is not yet released; retry on the next scheduled run."
               break
             fi
-            required_cli="opencode-a11y-${tag#v}-windows-x64-baseline.zip"
-            if ! jq -e --arg required "$required_cli" '
-              .draft == false and (.assets | length == 14) and
-              any(.assets[]; .name == $required) and
-              all(.assets[]; .state == "uploaded" and .size > 0 and (.digest | test("^sha256:[0-9a-f]{64}$")))
-            ' <<< "$cli" >/dev/null; then
-              echo "CLI release for $tag is incomplete or lacks the verified Windows executable." >&2
+            if ! python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/verify_release.py" cli "$tag" <<< "$cli"; then
+              if ! gh issue list -R aimansour/opencode --state open --limit 1000 --json title --jq '.[].title' | grep -Fq '[a11y-release-blocked]'; then
+                gh issue create -R aimansour/opencode --title "[a11y-release-blocked] incomplete CLI release $tag" \
+                  --body "Windows Desktop refused to use the incomplete personal CLI release a11y-$tag. Inspect release asset names, sizes and SHA-256 digests before closing this issue."
+              fi
               exit 1
             fi
             desktop_tag="a11y-desktop-$tag"
             if desktop="$(gh release view "$desktop_tag" -R aimansour/opencode --json isDraft,assets 2>/dev/null)"; then
-              expected_installer="opencode-a11y-desktop-${tag#v}-win-x64.exe"
-              if ! jq -e --arg installer "$expected_installer" '
-                .isDraft == false and (.assets | length == 3) and
-                (([.assets[].name] | sort) == (["BUILD_INFO.txt", "SHA256SUMS", $installer] | sort)) and
-                all(.assets[]; .state == "uploaded" and .size > 0 and (.digest | test("^sha256:[0-9a-f]{64}$")))
-              ' <<< "$desktop" >/dev/null; then
+              if ! python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/verify_release.py" windows "$tag" <<< "$desktop"; then
                 gh issue create -R aimansour/opencode --title "[a11y-release-blocked] incomplete $desktop_tag" \
                   --body "The Windows desktop release is a draft, lacks expected files, or has missing assets or hashes. Inspect https://github.com/aimansour/opencode/releases/tag/$desktop_tag and repair it manually before closing this issue."
                 exit 1

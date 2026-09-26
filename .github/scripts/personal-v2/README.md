@@ -28,8 +28,11 @@ until you resolve the problem and close the blocking issue. The Chromium
 accessibility regression, CLI build, per-target executable checks, and
 workflow-built CLI smoke test must succeed before publishing. The Windows
 Desktop pipeline additionally checks that the exact CLI from the personal
-CLI Release is bundled, and verifies the packaged executable hash. Draft
-or incomplete Desktop releases are blockers, never treated as finished.
+CLI Release is bundled, and verifies the packaged executable hash. A shared
+fail-closed release verifier checks the exact required filename set, uploaded
+state, nonzero size, and SHA-256 digest before any published CLI, Windows, or
+Unix release is considered complete. Draft or incomplete releases are blockers,
+never treated as finished.
 
 The workflow generates a dedicated tag (a11y-v2.x.y) pointing to the
 precise patched and branded source commit and publishes all 12 cross-

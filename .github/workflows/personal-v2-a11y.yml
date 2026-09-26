@@ -28,6 +28,11 @@ jobs:
       pr_sha: ${{ steps.pick.outputs.pr_sha }}
       release_tag: ${{ steps.pick.outputs.release_tag }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automation
+          persist-credentials: false
+          sparse-checkout: .github/scripts/personal-v2
       - id: pick
         name: Check PR, blocker, and official V2 releases
         env:
@@ -70,13 +75,12 @@ jobs:
             [[ "$eligible" == 1 ]] || continue
             [[ -z "$REQUESTED_TAG" || "$tag" == "$REQUESTED_TAG" ]] || continue
             if existing="$(gh release view "a11y-$tag" --repo aimansour/opencode --json isDraft,assets 2>/dev/null)"; then
-              if [[ "$(jq -r '.isDraft' <<< "$existing")" == true || "$(jq '.assets | length' <<< "$existing")" -ne 14 ||
-                    "$(jq '[.assets[] | select(.state == "uploaded" and .size > 0 and (.digest | startswith("sha256:")))] | length' <<< "$existing")" -ne 14 ]]; then
-                title="[a11y-release-blocked] $tag incomplete draft"
-                body="A draft personal release exists for $tag. Inspect its assets and the previous Actions run before deleting, completing, or retrying it: https://github.com/aimansour/opencode/releases/tag/a11y-$tag . Close this issue only after manual resolution."
+              if ! python3 "$GITHUB_WORKSPACE/automation/.github/scripts/personal-v2/verify_release.py" cli "$tag" <<< "$existing"; then
+                title="[a11y-release-blocked] $tag incomplete or invalid CLI release"
+                body="The personal CLI release for $tag is a draft, has missing/unexpected assets, or lacks valid uploaded hashes. Inspect the release and the previous Actions run before manually repairing it: https://github.com/aimansour/opencode/releases/tag/a11y-$tag . Close this issue only after manual resolution."
                 gh issue create --repo aimansour/opencode --title "$title" --body "$body"
-                echo "A draft release needs manual resolution; future runs are blocked."
-                exit 0
+                echo "Incomplete personal CLI release; future runs are blocked until manual repair."
+                exit 1
               fi
               continue
             fi
