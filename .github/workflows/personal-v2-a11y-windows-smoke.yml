@@ -8,6 +8,10 @@ on:
         required: true
         default: v2.0.18
         type: string
+      hotfix_suffix:
+        description: "Optional published Windows hotfix, such as r1. Empty selects the original release."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +24,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.upstream_tag }}
+      HOTFIX_SUFFIX: ${{ inputs.hotfix_suffix || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,7 +43,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           if ($env:TAG -notmatch '^v2\.[0-9]+\.[0-9]+$') { throw 'Invalid V2 tag.' }
+          if ($env:HOTFIX_SUFFIX -and $env:HOTFIX_SUFFIX -notmatch '^r[1-9][0-9]*$') { throw 'Invalid Windows hotfix suffix.' }
           $releaseTag = "a11y-desktop-$env:TAG"
+          if ($env:HOTFIX_SUFFIX) { $releaseTag += "-$env:HOTFIX_SUFFIX" }
           $info = gh release view $releaseTag -R aimansour/opencode --json isDraft,assets
           $info | python automation/.github/scripts/personal-v2/verify_release.py windows $env:TAG
           if ($LASTEXITCODE -ne 0) { throw 'Published Windows Release is incomplete.' }
@@ -53,6 +60,11 @@ jobs:
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($hash -ne $sum[0].Substring(0, 64)) { throw 'Downloaded installer SHA256 mismatch.' }
           $build = Get-Content release/BUILD_INFO.txt -Raw
+          if ($env:HOTFIX_SUFFIX) {
+            if ($build -notmatch ('(?m)^Personal Windows release: ' + [regex]::Escape($releaseTag) + '\r?$')) {
+              throw 'Published hotfix provenance does not identify this immutable release.'
+            }
+          }
           $match = [regex]::Match($build, '(?m)^Embedded CLI SHA256: ([0-9a-f]{64})\r?$')
           if (!$match.Success) { throw 'Missing embedded CLI provenance in release.' }
           "SMOKE_INSTALLER=$((Resolve-Path $installer).Path)" >> $env:GITHUB_ENV
@@ -60,9 +72,15 @@ jobs:
       - name: Install the NSIS package and prove the GUI renders
         shell: pwsh
         run: |
-          # Diagnostic-only: old flagged releases may use the obsolete shared install directory.
-          # The production Desktop workflow never passes -AllowLegacyInstall.
-          ./automation/.github/scripts/personal-v2/windows_installer_smoke.ps1 -Installer $env:SMOKE_INSTALLER -ExpectedCliHash $env:SMOKE_CLI_HASH -ReportDir "$env:GITHUB_WORKSPACE/smoke-output" -AllowLegacyInstall
+          # Only the flagged original release gets legacy diagnostics. Published hotfixes
+          # must pass the same strict install-directory isolation gate as production.
+          $smokeArgs = @{
+            Installer = $env:SMOKE_INSTALLER
+            ExpectedCliHash = $env:SMOKE_CLI_HASH
+            ReportDir = "$env:GITHUB_WORKSPACE/smoke-output"
+          }
+          if (!$env:HOTFIX_SUFFIX) { $smokeArgs.AllowLegacyInstall = $true }
+          ./automation/.github/scripts/personal-v2/windows_installer_smoke.ps1 @smokeArgs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
